@@ -1035,3 +1035,176 @@ class DistillationLossFn(LossFunction):
         }
 
         return kl_loss, metrics
+
+
+# ---------------------------------------------------------------------------
+# Diffusion GRPO Loss
+# ---------------------------------------------------------------------------
+
+
+class DiffusionClippedPGLossConfig(TypedDict):
+    """Configuration for diffusion clipped policy gradient loss.
+
+    This loss implements PPO-style clipped policy gradient for diffusion models,
+    operating on per-timestep SDE log-probabilities instead of per-token logprobs.
+    """
+
+    ratio_clip_min: float  # Lower clip bound for importance ratio (e.g., 0.2)
+    ratio_clip_max: float  # Upper clip bound for importance ratio (e.g., 0.2)
+    adv_clip_max: float  # Maximum absolute advantage value (e.g., 5.0)
+    kl_penalty: float  # KL penalty to reference model (0.0 to disable)
+
+
+class DiffusionClippedPGLossDataDict(TypedDict):
+    """Data dictionary expected by DiffusionClippedPGLossFn.
+
+    All timestep-dimension tensors have shape [B, T] where T is the number
+    of SDE window timesteps (not full diffusion trajectory length).
+    """
+
+    advantages: Tensor  # [B, T] per-timestep advantages
+    prev_logprobs: Tensor  # [B, T] logprobs from current policy (pre-train inference)
+    generation_logprobs: Tensor  # [B, T] logprobs from generation rollout
+    timestep_mask: Tensor  # [B, T] 1 for valid SDE window steps
+    sample_mask: Tensor  # [B] 1 for valid samples
+    reference_policy_mean: NotRequired[Tensor]  # [B, T, C, H, W] ref model mean prediction
+    current_policy_mean: NotRequired[Tensor]  # [B, T, C, H, W] current model mean prediction
+    std_dev: NotRequired[Tensor]  # [B, T, ...] SDE std dev (for KL computation)
+
+
+class DiffusionClippedPGLossFn:
+    """PPO-style clipped policy gradient loss for diffusion models.
+
+    Computes the clipped surrogate objective using per-timestep SDE log-probabilities.
+    The importance sampling ratio is computed between the current policy and the
+    policy that generated the trajectory (generation_logprobs), with an optional
+    intermediate "prev_logprobs" for multi-epoch training.
+
+    The loss formula per timestep t:
+        ratio_t = exp(curr_logprob_t - prev_logprob_t)
+        loss_t = -adv_t * min(ratio_t, clip(ratio_t, 1-eps, 1+eps))
+
+    Optionally includes KL regularization to a reference model, computed as
+    MSE between mean predictions normalized by SDE variance.
+
+    This loss implements the LossFunction protocol with:
+        loss_type = SEQUENCE_LEVEL (rewards are per-image)
+        input_type = LOGPROB
+    """
+
+    loss_type = LossType.SEQUENCE_LEVEL
+    input_type = LossInputType.LOGPROB
+
+    def __init__(self, config: DiffusionClippedPGLossConfig):
+        self.ratio_clip_min = config["ratio_clip_min"]
+        self.ratio_clip_max = config["ratio_clip_max"]
+        self.adv_clip_max = config["adv_clip_max"]
+        self.kl_penalty = config["kl_penalty"]
+
+    def __call__(
+        self,
+        data: BatchedDataDict,
+        global_valid_seqs: torch.Tensor,
+        global_valid_toks: torch.Tensor,
+        **kwargs: Any,
+    ) -> tuple[torch.Tensor, dict[str, Any]]:
+        """Compute diffusion clipped PG loss.
+
+        Args:
+            data: DiffusionClippedPGLossDataDict containing advantages, logprobs, and masks.
+            global_valid_seqs: Number of valid sequences for global normalization.
+            global_valid_toks: Number of valid timesteps for global normalization.
+            **kwargs: Must include ``next_token_logprobs`` — the current policy
+                log-probabilities with shape [B, T].
+
+        Returns:
+            loss: Scalar loss tensor.
+            metrics: Dictionary of training metrics.
+        """
+        curr_logprobs = kwargs["next_token_logprobs"]  # [B, T]
+        prev_logprobs = data["prev_logprobs"]  # [B, T]
+        generation_logprobs = data["generation_logprobs"]  # [B, T]
+        advantages = data["advantages"]  # [B, T]
+        timestep_mask = data["timestep_mask"]  # [B, T]
+        sample_mask = data["sample_mask"]  # [B]
+
+        # Combined mask: valid timesteps of valid samples
+        mask = timestep_mask * sample_mask.unsqueeze(-1)  # [B, T]
+
+        # Clip advantages
+        advantages = torch.clamp(advantages, -self.adv_clip_max, self.adv_clip_max)
+
+        # Importance sampling ratio
+        log_ratio = curr_logprobs - prev_logprobs
+        ratio = torch.exp(log_ratio)
+        clipped_ratio = torch.clamp(
+            ratio, 1.0 - self.ratio_clip_min, 1.0 + self.ratio_clip_max
+        )
+
+        # Clipped surrogate loss (PPO-style)
+        unclipped_loss = -advantages * ratio
+        clipped_loss = -advantages * clipped_ratio
+        pg_loss_per_step = torch.maximum(unclipped_loss, clipped_loss)
+
+        # Reduce over timesteps and samples with masking
+        policy_loss = masked_mean(
+            pg_loss_per_step, mask, global_normalization_factor=global_valid_seqs
+        )
+
+        # Optional KL regularization to reference model
+        kl_loss = torch.tensor(0.0, device=policy_loss.device)
+        if (
+            self.kl_penalty > 0
+            and "reference_policy_mean" in data
+            and "current_policy_mean" in data
+            and "std_dev" in data
+        ):
+            # KL computed as MSE between mean predictions / (2 * sigma^2)
+            mean_diff_sq = (
+                (data["current_policy_mean"] - data["reference_policy_mean"]) ** 2
+            )
+            # Average over spatial dims, keep batch and timestep dims
+            mean_diff_sq = mean_diff_sq.mean(
+                dim=tuple(range(2, mean_diff_sq.ndim))
+            )  # [B, T]
+            std_sq = (data["std_dev"] ** 2).mean(
+                dim=tuple(range(2, data["std_dev"].ndim))
+            )  # [B, T]
+            kl_per_step = mean_diff_sq / (2 * std_sq + 1e-8)  # [B, T]
+            kl_loss = self.kl_penalty * masked_mean(
+                kl_per_step, mask, global_normalization_factor=global_valid_seqs
+            )
+
+        loss = policy_loss + kl_loss
+
+        # Compute metrics
+        with torch.no_grad():
+            approx_kl = 0.5 * masked_mean(
+                log_ratio**2, mask, global_normalization_factor=global_valid_seqs
+            )
+            clip_fraction = masked_mean(
+                (torch.abs(ratio - 1.0) > self.ratio_clip_min).float(),
+                mask,
+                global_normalization_factor=global_valid_seqs,
+            )
+            mean_ratio = masked_mean(
+                ratio, mask, global_normalization_factor=global_valid_seqs
+            )
+            # Generation-to-current KL (off-policy staleness measure)
+            gen_log_ratio = curr_logprobs - generation_logprobs
+            gen_kl = 0.5 * masked_mean(
+                gen_log_ratio**2, mask, global_normalization_factor=global_valid_seqs
+            )
+
+        metrics = {
+            "policy_loss": float(policy_loss.item()),
+            "kl_loss": float(kl_loss.item()),
+            "loss": float(loss.item()),
+            "approx_kl": float(approx_kl.item()),
+            "clip_fraction": float(clip_fraction.item()),
+            "mean_ratio": float(mean_ratio.item()),
+            "gen_kl": float(gen_kl.item()),
+            "num_valid_samples": int(sample_mask.sum().item()),
+        }
+
+        return loss, metrics
