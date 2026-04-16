@@ -97,9 +97,10 @@ def sde_step_with_logprob(
 
     # Compute the mean of the reverse SDE transition
     # This is the drift term: x_{t+1} = mean + noise
-    prev_sample_mean = sample * (1 + std_dev_t**2 / (2 * sigma) * dt) + model_output * (
-        1 + std_dev_t**2 * (1 - sigma) / (2 * sigma)
-    ) * dt
+    prev_sample_mean = (
+        sample * (1 + std_dev_t**2 / (2 * sigma) * dt)
+        + model_output * (1 + std_dev_t**2 * (1 - sigma) / (2 * sigma)) * dt
+    )
 
     # Sample or use provided next state
     if prev_sample is None:
@@ -109,7 +110,9 @@ def sde_step_with_logprob(
             device=model_output.device,
             dtype=model_output.dtype,
         )
-        prev_sample = prev_sample_mean + std_dev_t * torch.sqrt(-1 * dt) * variance_noise
+        prev_sample = (
+            prev_sample_mean + std_dev_t * torch.sqrt(-1 * dt) * variance_noise
+        )
 
     # Compute Gaussian log-probability:
     # log p(x_{t+1} | x_t) = -||x_{t+1} - mu||^2 / (2 * sigma_noise^2)

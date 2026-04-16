@@ -14,7 +14,6 @@
 
 """Unit tests for DiffusionClippedPGLossFn."""
 
-import pytest
 import torch
 
 from nemo_rl.algorithms.loss.loss_functions import (
@@ -41,13 +40,15 @@ def _make_loss_fn(
 
 def _make_data(B=4, T=2, **overrides):
     """Create minimal training data for loss computation."""
-    data = BatchedDataDict({
-        "prev_logprobs": torch.zeros(B, T),
-        "generation_logprobs": torch.zeros(B, T),
-        "advantages": torch.ones(B, T),
-        "timestep_mask": torch.ones(B, T),
-        "sample_mask": torch.ones(B),
-    })
+    data = BatchedDataDict(
+        {
+            "prev_logprobs": torch.zeros(B, T),
+            "generation_logprobs": torch.zeros(B, T),
+            "advantages": torch.ones(B, T),
+            "timestep_mask": torch.ones(B, T),
+            "sample_mask": torch.ones(B),
+        }
+    )
     data.update(overrides)
     return data
 
@@ -65,7 +66,9 @@ class TestDiffusionClippedPGLossFn:
         global_valid_toks = torch.tensor(8.0)
 
         loss, metrics = loss_fn(
-            data, global_valid_seqs, global_valid_toks,
+            data,
+            global_valid_seqs,
+            global_valid_toks,
             next_token_logprobs=curr_logprobs,
         )
 
@@ -82,7 +85,9 @@ class TestDiffusionClippedPGLossFn:
         curr_logprobs = torch.randn(4, 2) * 0.1
 
         loss, metrics = loss_fn(
-            data, torch.tensor(4.0), torch.tensor(8.0),
+            data,
+            torch.tensor(4.0),
+            torch.tensor(8.0),
             next_token_logprobs=curr_logprobs,
         )
 
@@ -95,7 +100,9 @@ class TestDiffusionClippedPGLossFn:
         data = _make_data(prev_logprobs=logprobs)
 
         loss, metrics = loss_fn(
-            data, torch.tensor(4.0), torch.tensor(8.0),
+            data,
+            torch.tensor(4.0),
+            torch.tensor(8.0),
             next_token_logprobs=logprobs,
         )
 
@@ -113,7 +120,9 @@ class TestDiffusionClippedPGLossFn:
         curr_logprobs = torch.ones(4, 2) * 5.0
 
         loss, metrics = loss_fn(
-            data, torch.tensor(4.0), torch.tensor(8.0),
+            data,
+            torch.tensor(4.0),
+            torch.tensor(8.0),
             next_token_logprobs=curr_logprobs,
         )
 
@@ -126,18 +135,23 @@ class TestDiffusionClippedPGLossFn:
             B=4,
             T=3,
             advantages=torch.ones(4, 3) * 10.0,
-            timestep_mask=torch.tensor([
-                [1, 0, 0],
-                [1, 0, 0],
-                [1, 0, 0],
-                [1, 0, 0],
-            ], dtype=torch.float),
+            timestep_mask=torch.tensor(
+                [
+                    [1, 0, 0],
+                    [1, 0, 0],
+                    [1, 0, 0],
+                    [1, 0, 0],
+                ],
+                dtype=torch.float,
+            ),
             sample_mask=torch.tensor([1, 1, 0, 0], dtype=torch.float),
         )
         curr_logprobs = torch.zeros(4, 3)
 
         loss, metrics = loss_fn(
-            data, torch.tensor(2.0), torch.tensor(2.0),
+            data,
+            torch.tensor(2.0),
+            torch.tensor(2.0),
             next_token_logprobs=curr_logprobs,
         )
 
@@ -151,14 +165,18 @@ class TestDiffusionClippedPGLossFn:
         curr_logprobs = torch.zeros(4, 2)
 
         loss_big_adv, _ = loss_fn(
-            data, torch.tensor(4.0), torch.tensor(8.0),
+            data,
+            torch.tensor(4.0),
+            torch.tensor(8.0),
             next_token_logprobs=curr_logprobs,
         )
 
         # Compare with directly using clipped advantages
         data_clipped = _make_data(advantages=torch.ones(4, 2) * 2.0)
         loss_clipped, _ = loss_fn(
-            data_clipped, torch.tensor(4.0), torch.tensor(8.0),
+            data_clipped,
+            torch.tensor(4.0),
+            torch.tensor(8.0),
             next_token_logprobs=curr_logprobs,
         )
 
@@ -177,11 +195,15 @@ class TestDiffusionClippedPGLossFn:
         curr_logprobs = torch.zeros(B, T)
 
         loss_no_kl, metrics_no_kl = loss_fn_no_kl(
-            data, torch.tensor(float(B)), torch.tensor(float(B * T)),
+            data,
+            torch.tensor(float(B)),
+            torch.tensor(float(B * T)),
             next_token_logprobs=curr_logprobs,
         )
         loss_with_kl, metrics_with_kl = loss_fn_with_kl(
-            data, torch.tensor(float(B)), torch.tensor(float(B * T)),
+            data,
+            torch.tensor(float(B)),
+            torch.tensor(float(B * T)),
             next_token_logprobs=curr_logprobs,
         )
 

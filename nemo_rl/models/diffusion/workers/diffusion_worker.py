@@ -33,9 +33,11 @@ import torch.distributed as dist
 from torch.distributed.fsdp import (
     BackwardPrefetch,
     CPUOffload,
-    FullyShardedDataParallel as FSDP,
     MixedPrecision,
     ShardingStrategy,
+)
+from torch.distributed.fsdp import (
+    FullyShardedDataParallel as FSDP,
 )
 from torch.distributed.fsdp.api import FullStateDictConfig, StateDictType
 from torch.distributed.fsdp.wrap import transformer_auto_wrap_policy

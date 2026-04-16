@@ -305,7 +305,9 @@ class DiffusionGenerationPipeline:
         pipeline = self.pipeline
         config = self.config
         batch_size = latents.shape[0]
-        num_window_steps = latents.shape[1] - 1  # T_window transitions from T_window+1 states
+        num_window_steps = (
+            latents.shape[1] - 1
+        )  # T_window transitions from T_window+1 states
 
         height = config["height"]
         width = config["width"]

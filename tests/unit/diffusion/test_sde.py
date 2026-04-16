@@ -17,7 +17,6 @@
 import math
 from unittest.mock import MagicMock
 
-import pytest
 import torch
 
 from nemo_rl.models.diffusion.sde import sde_step_with_logprob
@@ -101,7 +100,9 @@ class TestSDEStepWithLogprob:
         )
 
         # Log-probs should be identical when evaluating the same transition
-        torch.testing.assert_close(log_prob_gen, log_prob_recomputed, atol=1e-5, rtol=1e-5)
+        torch.testing.assert_close(
+            log_prob_gen, log_prob_recomputed, atol=1e-5, rtol=1e-5
+        )
 
     def test_log_prob_gaussian_consistency(self):
         """Verify log-prob matches analytical Gaussian log-probability."""
@@ -138,11 +139,11 @@ class TestSDEStepWithLogprob:
             - math.log(sigma_noise)
             - 0.5 * math.log(2 * math.pi)
         )
-        manual_log_prob = manual_log_prob.mean(dim=tuple(range(1, manual_log_prob.ndim)))
-
-        torch.testing.assert_close(
-            log_prob, manual_log_prob, atol=1e-4, rtol=1e-4
+        manual_log_prob = manual_log_prob.mean(
+            dim=tuple(range(1, manual_log_prob.ndim))
         )
+
+        torch.testing.assert_close(log_prob, manual_log_prob, atol=1e-4, rtol=1e-4)
 
     def test_higher_noise_gives_broader_distribution(self):
         """Higher noise_level should give less negative (broader) log-probs for off-mean samples."""

@@ -39,7 +39,6 @@ from nemo_rl.models.diffusion.interfaces import DiffusionTrainDataSpec
 from nemo_rl.models.diffusion.policy import DiffusionPolicy
 from nemo_rl.utils.logger import Logger, LoggerConfig
 
-
 # ---------------------------------------------------------------------------
 # Configuration TypedDicts
 # ---------------------------------------------------------------------------
@@ -149,9 +148,7 @@ def setup(
     # Create logger
     logger = Logger(config["logger"])
 
-    save_state = DiffusionGRPOSaveState(
-        current_epoch=0, total_steps=0, total_samples=0
-    )
+    save_state = DiffusionGRPOSaveState(current_epoch=0, total_steps=0, total_samples=0)
 
     return policy, dataloader, loss_fn, logger, save_state
 
@@ -217,9 +214,11 @@ def diffusion_grpo_train(
 
             # 3. ADVANTAGE: Per-prompt baseline normalization
             # Shape [B, 1] — calculate_baseline_and_std_per_prompt expects 2D prompts
-            prompt_ids = torch.arange(len(batch_prompts)).repeat_interleave(
-                num_images_per_prompt
-            ).unsqueeze(-1)
+            prompt_ids = (
+                torch.arange(len(batch_prompts))
+                .repeat_interleave(num_images_per_prompt)
+                .unsqueeze(-1)
+            )
             num_window_steps = trajectory["log_probs"].shape[1]
             timestep_mask = torch.ones(batch_size, num_window_steps)
 

@@ -23,7 +23,7 @@ Images are passed via the metadata dictionary rather than message_log,
 since diffusion models don't use chat-format message logs.
 """
 
-from typing import Any, Optional, TypedDict
+from typing import TypedDict
 
 import ray
 import torch

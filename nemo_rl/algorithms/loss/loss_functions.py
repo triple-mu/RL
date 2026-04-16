@@ -1067,8 +1067,12 @@ class DiffusionClippedPGLossDataDict(TypedDict):
     generation_logprobs: Tensor  # [B, T] logprobs from generation rollout
     timestep_mask: Tensor  # [B, T] 1 for valid SDE window steps
     sample_mask: Tensor  # [B] 1 for valid samples
-    reference_policy_mean: NotRequired[Tensor]  # [B, T, C, H, W] ref model mean prediction
-    current_policy_mean: NotRequired[Tensor]  # [B, T, C, H, W] current model mean prediction
+    reference_policy_mean: NotRequired[
+        Tensor
+    ]  # [B, T, C, H, W] ref model mean prediction
+    current_policy_mean: NotRequired[
+        Tensor
+    ]  # [B, T, C, H, W] current model mean prediction
     std_dev: NotRequired[Tensor]  # [B, T, ...] SDE std dev (for KL computation)
 
 
@@ -1161,8 +1165,8 @@ class DiffusionClippedPGLossFn:
         ):
             # KL computed as MSE between mean predictions / (2 * sigma^2)
             mean_diff_sq = (
-                (data["current_policy_mean"] - data["reference_policy_mean"]) ** 2
-            )
+                data["current_policy_mean"] - data["reference_policy_mean"]
+            ) ** 2
             # Average over spatial dims, keep batch and timestep dims
             mean_diff_sq = mean_diff_sq.mean(
                 dim=tuple(range(2, mean_diff_sq.ndim))
