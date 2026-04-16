@@ -1,0 +1,107 @@
+# Minimal single-GPU smoke config for validating the Qwen-Image diffusion GRPO path.
+#
+# Usage:
+#   CUDA_VISIBLE_DEVICES=0 python examples/run_diffusion_grpo.py \
+#     --config examples/configs/diffusion_grpo_qwen_image_smoke.yaml
+
+diffusion_policy:
+  model_name: "Qwen/Qwen-Image"
+  precision: "bfloat16"
+  train_global_batch_size: 2
+  train_micro_batch_size: 1
+  logprob_batch_size: 1
+  max_grad_norm: 1.0
+  reference_model: false
+
+  lora:
+    enabled: true
+    rank: 8
+    alpha: 16
+    init_weights: "gaussian"
+    target_modules:
+      - "attn.to_k"
+      - "attn.to_q"
+      - "attn.to_v"
+      - "attn.to_out.0"
+      - "attn.add_k_proj"
+      - "attn.add_q_proj"
+      - "attn.add_v_proj"
+      - "attn.to_add_out"
+      - "img_mlp.net.0.proj"
+      - "img_mlp.net.2"
+      - "txt_mlp.net.0.proj"
+      - "txt_mlp.net.2"
+
+  fsdp:
+    enabled: true
+    cpu_offload: true
+    activation_checkpointing: true
+    mixed_precision_dtype: "bfloat16"
+
+  text_encoder:
+    freeze: true
+
+  vae:
+    freeze: true
+    dtype: "float32"
+
+  optimizer:
+    name: "torch.optim.AdamW"
+    kwargs:
+      lr: 1.0e-4
+      weight_decay: 0.01
+      betas: [0.9, 0.999]
+      eps: 1.0e-8
+
+  generation:
+    num_inference_steps: 2
+    eval_num_inference_steps: 4
+    guidance_scale: 4.0
+    height: 256
+    width: 256
+    noise_level: 1.2
+    sde_window_size: 1
+    sde_window_range_start: 0
+    sde_window_range_end: 2
+
+loss_fn:
+  ratio_clip_min: 0.2
+  ratio_clip_max: 0.2
+  adv_clip_max: 5.0
+  kl_penalty: 0.0
+
+diffusion_grpo:
+  num_prompts_per_step: 1
+  num_images_per_prompt: 2
+  max_num_epochs: 1
+  max_num_steps: 2
+  normalize_rewards: true
+  use_leave_one_out_baseline: true
+  val_period: 100
+  seed: 42
+
+data:
+  train_data_path: "data/prompts/train.txt"
+  input_key: "prompt"
+  shuffle: true
+  num_workers: 0
+
+checkpointing:
+  enabled: false
+  checkpoint_dir: "results/diffusion_grpo_qwen_image_smoke"
+  save_period: 100
+
+logger:
+  log_dir: "logs/diffusion_grpo_qwen_image_smoke"
+  wandb_enabled: false
+  swanlab_enabled: false
+  tensorboard_enabled: false
+  mlflow_enabled: false
+  monitor_gpus: false
+  wandb: {}
+  swanlab: {}
+  tensorboard: {}
+  mlflow: {}
+  gpu_monitoring:
+    collection_interval: 60
+    flush_interval: 60

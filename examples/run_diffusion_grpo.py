@@ -31,7 +31,6 @@ from nemo_rl.algorithms.diffusion_grpo import (
     diffusion_grpo_train,
     setup,
 )
-from nemo_rl.distributed.virtual_cluster import init_ray
 from nemo_rl.utils.config import (
     load_config,
     parse_hydra_overrides,
@@ -41,7 +40,6 @@ from nemo_rl.utils.logger import get_next_experiment_dir
 
 
 def parse_args() -> tuple[argparse.Namespace, list[str]]:
-    """Parse command line arguments."""
     parser = argparse.ArgumentParser(
         description="Run Diffusion GRPO training with configuration"
     )
@@ -53,7 +51,6 @@ def parse_args() -> tuple[argparse.Namespace, list[str]]:
 
 
 def main() -> None:
-    """Main entry point for diffusion GRPO training."""
     register_omegaconf_resolvers()
     args, overrides = parse_args()
 
@@ -72,7 +69,6 @@ def main() -> None:
         config = parse_hydra_overrides(config, overrides)
 
     config: DiffusionMasterConfig = OmegaConf.to_container(config, resolve=True)
-    print("Applied CLI overrides")
 
     print("Final config:")
     pprint.pprint(config)
@@ -80,23 +76,15 @@ def main() -> None:
     # Set up log directory
     config["logger"]["log_dir"] = get_next_experiment_dir(config["logger"]["log_dir"])
     print(f"Using log directory: {config['logger']['log_dir']}")
-    if config["checkpointing"]["enabled"]:
-        print(f"Using checkpoint directory: {config['checkpointing']['checkpoint_dir']}")
-
-    # Initialize Ray
-    init_ray()
 
     # Setup all components
-    policy, dataloader, loss_fn, reward_env, logger, save_state = setup(config)
+    policy, dataloader, loss_fn, logger, save_state = setup(config)
 
     print("Running Diffusion GRPO training")
-
-    # Run training
     diffusion_grpo_train(
         policy=policy,
         dataloader=dataloader,
         loss_fn=loss_fn,
-        reward_env=reward_env,
         logger=logger,
         save_state=save_state,
         config=config,

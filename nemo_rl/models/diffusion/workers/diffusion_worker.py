@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""FSDP-based Ray worker for diffusion model training and generation.
+"""FSDP-based worker for diffusion model training and generation.
 
 Each worker holds a shard of the diffusion transformer model (via FSDP),
 along with frozen text encoder and VAE components. Workers handle:
@@ -23,16 +23,13 @@ along with frozen text encoder and VAE components. Workers handle:
   - Per-timestep gradient accumulation training
 """
 
-import copy
 import functools
 import os
 from collections import defaultdict
 from typing import Any, Optional
 
-import ray
 import torch
 import torch.distributed as dist
-from torch.cuda.amp import autocast
 from torch.distributed.fsdp import (
     BackwardPrefetch,
     CPUOffload,
@@ -50,7 +47,18 @@ from nemo_rl.models.diffusion.interfaces import (
 )
 from nemo_rl.models.diffusion.pipeline import DiffusionGenerationPipeline
 from nemo_rl.models.diffusion.sde import sde_step_with_logprob
-from nemo_rl.models.policy.workers.base_policy_worker import AbstractPolicyWorker
+
+
+def _ensure_dist_initialized():
+    """Initialize torch.distributed for single-GPU if not already initialized."""
+    if dist.is_initialized():
+        return
+    os.environ.setdefault("RANK", "0")
+    os.environ.setdefault("WORLD_SIZE", "1")
+    os.environ.setdefault("LOCAL_RANK", "0")
+    os.environ.setdefault("MASTER_ADDR", "localhost")
+    os.environ.setdefault("MASTER_PORT", "29500")
+    dist.init_process_group(backend="nccl", rank=0, world_size=1)
 
 
 def _get_qwenimage_transformer_layer_cls():
@@ -111,19 +119,12 @@ def _apply_fsdp(model, config: DiffusionPolicyConfig, get_layer_cls):
     return fsdp_model
 
 
-class DiffusionPolicyWorkerImpl(AbstractPolicyWorker):
-    """FSDP-sharded diffusion policy worker.
-
-    Manages a single GPU shard of the diffusion transformer, handling
-    generation, log-probability inference, and training. The frozen
-    text encoder and VAE live on the same device for prompt encoding
-    and image decoding.
-
-    Args:
-        config: Diffusion policy configuration.
-    """
+class DiffusionPolicyWorkerImpl:
+    """FSDP-sharded diffusion policy worker for a single GPU."""
 
     def __init__(self, config: DiffusionPolicyConfig):
+        _ensure_dist_initialized()
+
         self.config = config
         self.rank = int(os.environ.get("RANK", 0))
         self.world_size = int(os.environ.get("WORLD_SIZE", 1))
@@ -152,7 +153,7 @@ class DiffusionPolicyWorkerImpl(AbstractPolicyWorker):
         )
         pipeline.safety_checker = None
 
-        # Freeze all components
+        # Freeze VAE and text encoder
         pipeline.vae.to(torch.float32)
         pipeline.vae.requires_grad_(False)
         pipeline.text_encoder.to(self.inference_dtype)
@@ -174,6 +175,9 @@ class DiffusionPolicyWorkerImpl(AbstractPolicyWorker):
             transformer = get_peft_model(transformer, lora_config)
             transformer.print_trainable_parameters()
 
+        # Ensure uniform dtype for FSDP (LoRA params may init as float32)
+        transformer = transformer.to(self.inference_dtype)
+
         # Wrap transformer with FSDP
         self.transformer = _apply_fsdp(
             transformer, config, _get_qwenimage_transformer_layer_cls
@@ -186,7 +190,7 @@ class DiffusionPolicyWorkerImpl(AbstractPolicyWorker):
         self.pipeline_instance = pipeline
         self.pipeline_instance.transformer = self.transformer
 
-        # Load reference model if KL regularization is needed
+        # Reference model for KL regularization (optional)
         self.transformer_ref = None
         if config.get("reference_model", False):
             ref_pipeline = DiffusionPipeline.from_pretrained(
@@ -202,7 +206,6 @@ class DiffusionPolicyWorkerImpl(AbstractPolicyWorker):
             del ref_pipeline
 
     def _setup_optimizer(self, config: DiffusionPolicyConfig):
-        """Create optimizer for trainable parameters."""
         trainable_params = [p for p in self.transformer.parameters() if p.requires_grad]
         self.trainable_params = trainable_params
 
@@ -211,7 +214,6 @@ class DiffusionPolicyWorkerImpl(AbstractPolicyWorker):
         self.optimizer = optimizer_cls(trainable_params, **opt_config["kwargs"])
 
     def _setup_pipeline(self, config: DiffusionPolicyConfig):
-        """Create the generation pipeline wrapper."""
         self.gen_pipeline = DiffusionGenerationPipeline(
             self.pipeline_instance, config["generation"]
         )
@@ -222,18 +224,6 @@ class DiffusionPolicyWorkerImpl(AbstractPolicyWorker):
         negative_prompts: Optional[list[str]] = None,
         generator: Optional[torch.Generator] = None,
     ) -> DiffusionTrajectorySpec:
-        """Generate denoising trajectories with log-probabilities.
-
-        Runs the model in eval mode to produce trajectories for GRPO rollouts.
-
-        Args:
-            prompts: Text prompts for generation.
-            negative_prompts: Negative prompts for CFG.
-            generator: Random generator for reproducibility.
-
-        Returns:
-            DiffusionTrajectorySpec with trajectory data and decoded images.
-        """
         self.transformer.eval()
         with torch.no_grad():
             return self.gen_pipeline.generate_trajectory(
@@ -252,14 +242,6 @@ class DiffusionPolicyWorkerImpl(AbstractPolicyWorker):
         negative_prompt_embeds: torch.Tensor,
         negative_prompt_embeds_mask: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Recompute log-probabilities for existing trajectories.
-
-        Runs the current policy (possibly updated since generation) to evaluate
-        how likely the previously sampled trajectory is.
-
-        Returns:
-            Tuple of (log_probs [B, T], means [B, T, C, H, W], std_devs [B, T, ...]).
-        """
         self.transformer.eval()
         with torch.no_grad():
             return self.gen_pipeline.compute_logprobs_for_trajectory(
@@ -280,15 +262,9 @@ class DiffusionPolicyWorkerImpl(AbstractPolicyWorker):
         negative_prompt_embeds: torch.Tensor,
         negative_prompt_embeds_mask: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Compute reference model mean predictions for KL regularization.
-
-        Returns:
-            Tuple of (means [B, T, C, H, W], std_devs [B, T, ...]).
-        """
         if self.transformer_ref is None:
             raise RuntimeError("Reference model not loaded. Set reference_model=True.")
 
-        # Temporarily swap transformer for reference
         orig_transformer = self.pipeline_instance.transformer
         self.pipeline_instance.transformer = self.transformer_ref
         ref_pipeline = DiffusionGenerationPipeline(
@@ -306,7 +282,6 @@ class DiffusionPolicyWorkerImpl(AbstractPolicyWorker):
                 negative_prompt_embeds_mask=negative_prompt_embeds_mask,
             )
 
-        # Restore original transformer
         self.pipeline_instance.transformer = orig_transformer
         return means, std_devs
 
@@ -315,19 +290,7 @@ class DiffusionPolicyWorkerImpl(AbstractPolicyWorker):
         data: DiffusionTrainDataSpec,
         loss_fn,
     ) -> dict[str, Any]:
-        """Execute one training step with per-timestep gradient accumulation.
-
-        Iterates over timesteps in the SDE window, computing a forward pass
-        and loss at each step, accumulating gradients, then performing a
-        single optimizer step.
-
-        Args:
-            data: Training data containing trajectories, logprobs, and advantages.
-            loss_fn: DiffusionClippedPGLossFn instance.
-
-        Returns:
-            Dictionary of aggregated training metrics.
-        """
+        """Per-timestep gradient accumulation training step."""
         self.transformer.train()
         self.optimizer.zero_grad()
 
@@ -371,7 +334,6 @@ class DiffusionPolicyWorkerImpl(AbstractPolicyWorker):
             ).expand(batch_size)
 
         all_metrics = defaultdict(list)
-        total_loss = torch.tensor(0.0, device=self.device)
 
         for t_idx in range(num_timesteps):
             x_t = latents[:, t_idx]
@@ -380,7 +342,7 @@ class DiffusionPolicyWorkerImpl(AbstractPolicyWorker):
             timestep_expanded = t.expand(batch_size).to(x_t.dtype)
 
             # Forward pass with CFG
-            with autocast(dtype=self.inference_dtype):
+            with torch.amp.autocast("cuda", dtype=self.inference_dtype):
                 noise_pred = self.transformer(
                     hidden_states=torch.cat([x_t, x_t], dim=0),
                     timestep=torch.cat([timestep_expanded, timestep_expanded], dim=0)
@@ -416,7 +378,7 @@ class DiffusionPolicyWorkerImpl(AbstractPolicyWorker):
                 noise_level=config["generation"]["noise_level"],
             )
 
-            # Prepare per-timestep loss data
+            # Per-timestep loss data
             step_data = {
                 "prev_logprobs": data["prev_logprobs"][:, t_idx : t_idx + 1],
                 "generation_logprobs": data["generation_logprobs"][
@@ -427,7 +389,6 @@ class DiffusionPolicyWorkerImpl(AbstractPolicyWorker):
                 "sample_mask": data["sample_mask"],
             }
 
-            # Add reference model data if available
             if "reference_policy_mean" in data:
                 step_data["reference_policy_mean"] = data["reference_policy_mean"][
                     :, t_idx : t_idx + 1
@@ -447,7 +408,6 @@ class DiffusionPolicyWorkerImpl(AbstractPolicyWorker):
                 next_token_logprobs=log_prob.unsqueeze(1),
             )
 
-            # Scale loss for gradient accumulation across timesteps
             scaled_loss = step_loss / num_timesteps
             scaled_loss.backward()
 
@@ -466,7 +426,6 @@ class DiffusionPolicyWorkerImpl(AbstractPolicyWorker):
         self.optimizer.step()
         self.optimizer.zero_grad()
 
-        # Aggregate metrics across timesteps
         metrics = {}
         for k, v_list in all_metrics.items():
             metrics[k] = sum(v_list) / len(v_list) if v_list else 0.0
@@ -474,16 +433,7 @@ class DiffusionPolicyWorkerImpl(AbstractPolicyWorker):
 
         return metrics
 
-    def prepare_for_training(self):
-        """Switch model to training mode."""
-        self.transformer.train()
-
-    def finish_training(self):
-        """Switch model to eval mode after training."""
-        self.transformer.eval()
-
     def save_checkpoint(self, save_dir: str, step: int):
-        """Save model checkpoint using FSDP full state dict."""
         from safetensors.torch import save_file
 
         save_path = os.path.join(save_dir, f"checkpoint-{step}")
@@ -502,7 +452,6 @@ class DiffusionPolicyWorkerImpl(AbstractPolicyWorker):
         dist.barrier()
 
     def shutdown(self) -> bool:
-        """Cleanup worker resources."""
         return True
 
 
@@ -513,10 +462,3 @@ def _resolve_class(fqn: str):
 
     module = importlib.import_module(module_path)
     return getattr(module, class_name)
-
-
-@ray.remote
-class DiffusionPolicyWorker(DiffusionPolicyWorkerImpl):
-    """Ray remote actor wrapper for DiffusionPolicyWorkerImpl."""
-
-    pass
