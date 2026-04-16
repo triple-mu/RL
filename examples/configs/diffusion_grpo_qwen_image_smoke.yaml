@@ -1,7 +1,9 @@
-# Minimal single-GPU smoke config for validating the Qwen-Image diffusion GRPO path.
+# Minimal smoke config for validating the Qwen-Image diffusion GRPO path.
+# Requires >=2 GPUs (the 20B transformer needs FSDP sharding to fit).
 #
 # Usage:
-#   CUDA_VISIBLE_DEVICES=0 python examples/run_diffusion_grpo.py \
+#   CUDA_VISIBLE_DEVICES=0,1 torchrun --nproc_per_node=2 \
+#     examples/run_diffusion_grpo.py \
 #     --config examples/configs/diffusion_grpo_qwen_image_smoke.yaml
 
 diffusion_policy:
@@ -54,15 +56,12 @@ diffusion_policy:
       eps: 1.0e-8
 
   generation:
-    num_inference_steps: 2
+    num_inference_steps: 4
     eval_num_inference_steps: 4
     guidance_scale: 4.0
     height: 256
     width: 256
-    noise_level: 1.2
-    sde_window_size: 1
-    sde_window_range_start: 0
-    sde_window_range_end: 2
+    noise_level: 0.7
 
 loss_fn:
   ratio_clip_min: 0.2

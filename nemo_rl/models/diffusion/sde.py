@@ -18,8 +18,7 @@ Implements the reverse-time SDE step used in diffusion GRPO training.
 The log-probability measures how likely a transition x_t -> x_{t+1} is under
 the current policy (denoising model), enabling policy gradient optimization.
 
-Adapted from flow_grpo (https://github.com/...) which itself adapts from
-ddpo-pytorch (https://github.com/kvablack/ddpo-pytorch).
+Adapted from ddpo-pytorch (https://github.com/kvablack/ddpo-pytorch).
 """
 
 import math

@@ -52,7 +52,7 @@ from nemo_rl.models.diffusion.sde import sde_step_with_logprob
 
 
 def _ensure_dist_initialized():
-    """Initialize torch.distributed for single-GPU if not already initialized."""
+    """Initialize torch.distributed if not already initialized."""
     if dist.is_initialized():
         return
     os.environ.setdefault("RANK", "0")
@@ -60,7 +60,11 @@ def _ensure_dist_initialized():
     os.environ.setdefault("LOCAL_RANK", "0")
     os.environ.setdefault("MASTER_ADDR", "localhost")
     os.environ.setdefault("MASTER_PORT", "29500")
-    dist.init_process_group(backend="nccl", rank=0, world_size=1)
+    dist.init_process_group(
+        backend="nccl",
+        rank=int(os.environ["RANK"]),
+        world_size=int(os.environ["WORLD_SIZE"]),
+    )
 
 
 def _get_qwenimage_transformer_layer_cls():
@@ -232,7 +236,6 @@ class DiffusionPolicyWorkerImpl:
                 prompts=prompts,
                 negative_prompts=negative_prompts,
                 generator=generator,
-                process_index=self.rank,
             )
 
     def get_logprobs(

@@ -23,6 +23,7 @@ Training loop for flow-matching diffusion models (e.g., Qwen-Image):
 5. TRAIN:    Per-timestep clipped policy gradient optimization
 """
 
+import os
 import time
 from typing import NotRequired, TypedDict
 
@@ -187,7 +188,8 @@ def diffusion_grpo_train(
     total_steps = save_state["total_steps"]
     current_epoch = save_state["current_epoch"]
 
-    print(f"Starting diffusion GRPO training from step {total_steps}")
+    rank = int(os.environ.get("RANK", 0))
+    print(f"[rank {rank}] Starting diffusion GRPO training from step {total_steps}")
 
     while current_epoch < max_epochs and total_steps < max_steps:
         for batch_prompts in dataloader:
@@ -227,6 +229,10 @@ def diffusion_grpo_train(
                 rewards=rewards,
                 mask=timestep_mask,
             )  # [B, T]
+
+            # Free generation-only tensors before next phases
+            del trajectory["images"]
+            torch.cuda.empty_cache()
 
             # 4. LOGPROB INFERENCE: Recompute under current policy
             lp_start = time.time()
@@ -284,14 +290,14 @@ def diffusion_grpo_train(
             step_metrics["step_time"] = time.time() - step_start_time
             step_metrics["num_samples"] = batch_size
 
-            logger.log_metrics(step_metrics, step=total_steps)
-
-            print(
-                f"Step {total_steps}: "
-                f"loss={step_metrics.get('loss', 'N/A')}, "
-                f"reward={step_metrics['reward_mean']:.4f}, "
-                f"time={step_metrics['step_time']:.1f}s"
-            )
+            if rank == 0:
+                logger.log_metrics(step_metrics, step=total_steps)
+                print(
+                    f"Step {total_steps}: "
+                    f"loss={step_metrics.get('loss', 'N/A')}, "
+                    f"reward={step_metrics['reward_mean']:.4f}, "
+                    f"time={step_metrics['step_time']:.1f}s"
+                )
 
             if (
                 ckpt_config["enabled"]
@@ -309,7 +315,8 @@ def diffusion_grpo_train(
         current_epoch += 1
         save_state["current_epoch"] = current_epoch
 
-    print(f"Training complete. Total steps: {total_steps}, epochs: {current_epoch}")
+    if rank == 0:
+        print(f"Training complete. Total steps: {total_steps}, epochs: {current_epoch}")
 
     if ckpt_config["enabled"]:
         policy.save_checkpoint(

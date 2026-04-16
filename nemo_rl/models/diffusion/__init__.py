@@ -63,15 +63,12 @@ class OptimizerConfig(TypedDict):
 class DiffusionGenerationConfig(TypedDict):
     """Diffusion-specific generation parameters."""
 
-    num_inference_steps: int  # Total denoising steps (e.g., 10)
+    num_inference_steps: int  # Total denoising steps (e.g., 28)
     eval_num_inference_steps: int  # Steps for evaluation (e.g., 50)
     guidance_scale: float  # Classifier-free guidance scale
     height: int  # Image height in pixels
     width: int  # Image width in pixels
-    noise_level: float  # SDE stochasticity control (e.g., 1.2)
-    sde_window_size: int  # Number of timesteps in training window (e.g., 2)
-    sde_window_range_start: int  # Start of random window selection range
-    sde_window_range_end: int  # End of random window selection range
+    noise_level: float  # SDE stochasticity control (e.g., 0.7)
 
 
 class DiffusionPolicyConfig(TypedDict):
