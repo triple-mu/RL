@@ -52,9 +52,10 @@ def test_sde_step_recomputes_logprob_from_prev_sample():
     dt = sigma_prev - sigma
     std_dev_t = torch.sqrt(sigma / (1 - sigma)) * noise_level
     expected_mean = sample * (1 + std_dev_t**2 / (2 * sigma) * dt)
-    expected_mean = expected_mean + model_output * (
-        1 + std_dev_t**2 * (1 - sigma) / (2 * sigma)
-    ) * dt
+    expected_mean = (
+        expected_mean
+        + model_output * (1 + std_dev_t**2 * (1 - sigma) / (2 * sigma)) * dt
+    )
     prev_sample = expected_mean + 0.25 * std_dev_t * torch.sqrt(-dt)
     std = std_dev_t * torch.sqrt(-dt)
     expected_logprob = (

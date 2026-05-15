@@ -61,9 +61,10 @@ def sde_step_with_logprob(
             * noise_level
         )
         prev_sample_mean = sample * (1 + std_dev_t**2 / (2 * sigma) * dt)
-        prev_sample_mean = prev_sample_mean + model_output * (
-            1 + std_dev_t**2 * (1 - sigma) / (2 * sigma)
-        ) * dt
+        prev_sample_mean = (
+            prev_sample_mean
+            + model_output * (1 + std_dev_t**2 * (1 - sigma) / (2 * sigma)) * dt
+        )
         sqrt_negative_dt = torch.sqrt(-dt)
         if prev_sample is None:
             variance_noise = torch.randn(
