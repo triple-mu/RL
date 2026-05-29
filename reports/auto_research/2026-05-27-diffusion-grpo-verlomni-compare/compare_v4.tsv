@@ -1,0 +1,26 @@
+stack	variant	step	policy_loss	mean_ratio	clipfrac	reward_mean	notes
+verl_omni	v3b lr=1e-2 K=4 epochs=4	1	-5.17e-06	0.99999772	0.109	-0.010985	per-element [B=4, N=64] ⇒ 256 element loss tensor
+verl_omni	v3b lr=1e-2 K=4 epochs=4	2	-8.06e-06	0.99999744	0.090	-0.010910	—
+verl_omni	v3b lr=1e-2 K=4 epochs=4	3	-2.83e-06	1.00000211	0.072	-0.010923	—
+verl_omni	v3b lr=1e-2 K=4 epochs=4	4	3.84e-06	1.00000536	0.031	-0.010890	—
+verl_omni	v3b lr=1e-2 K=4 epochs=4	5	1.35e-06	1.00000023	0.033	-0.010929	—
+nemo_rl	v3 per-element [B,T]	0	0.3344	0.99999088	0.0	-0.011005	[B=4, T=8] ⇒ 32 element loss tensor
+nemo_rl	v3 per-element [B,T]	1	-0.4287	1.00000191	0.0	-0.010963	—
+nemo_rl	v3 per-element [B,T]	2	0.1019	0.99994528	0.0	-0.010994	—
+nemo_rl	v3 per-element [B,T]	3	0.8059	0.99996293	0.0	-0.011001	—
+nemo_rl	v3 per-element [B,T]	4	0.8032	0.99996805	0.0	-0.010951	—
+nemo_rl	v3 per-sample [B]	0	0.3168	1.00004172	0.0	-0.011005	sum logprob over T ⇒ [B=4] 4 element loss tensor
+nemo_rl	v3 per-sample [B]	1	-0.7590	1.00015497	0.0	-0.010976	—
+nemo_rl	v3 per-sample [B]	2	-0.0678	0.99972600	0.0	-0.010991	—
+nemo_rl	v3 per-sample [B]	3	0.6645	0.99978757	0.0	-0.010996	—
+nemo_rl	v3 per-sample [B]	4	0.8088	0.99974877	0.0	-0.010962	—
+nemo_rl	v4 per-element sum-all [B]	0	0.0998	1.4894	0.0	-0.011016	per-element logprob, sum T+N+C, ratio drifts huge
+nemo_rl	v4 per-element sum-all [B]	1	-1.0561	2.1685	0.0	-0.010957	—
+nemo_rl	v4 per-element sum-all [B]	2	-0.1008	0.6384	0.0	-0.010976	—
+nemo_rl	v4 per-element sum-all [B]	3	0.6162	0.8903	0.0	-0.010990	—
+nemo_rl	v4 per-element sum-all [B]	4	0.4837	1.6172	0.0	-0.010953	—
+nemo_rl	v4b per-element sum-T-C [B,N]	0	0.2405	1.0052	0.0	-0.010998	matches verl-omni shape: 4*64=256 element loss tensor
+nemo_rl	v4b per-element sum-T-C [B,N]	1	-0.8495	1.0166	0.0	-0.010961	—
+nemo_rl	v4b per-element sum-T-C [B,N]	2	0.0128	0.9972	0.0	-0.010997	—
+nemo_rl	v4b per-element sum-T-C [B,N]	3	0.7445	0.9875	0.0	-0.010989	—
+nemo_rl	v4b per-element sum-T-C [B,N]	4	0.7548	0.9892	0.0	-0.010968	—

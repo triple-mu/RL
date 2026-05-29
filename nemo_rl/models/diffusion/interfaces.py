@@ -16,6 +16,87 @@ from typing import Any, NotRequired, Protocol, TypedDict
 import torch
 
 
+class DiffusionPipelineCfg(TypedDict):
+    """Per-rollout pipeline knobs aligned with verl-omni `DiffusionPipelineConfig`."""
+
+    height: int
+    width: int
+    num_inference_steps: int
+    true_cfg_scale: float
+    max_sequence_length: int
+    guidance_scale: NotRequired[float | None]
+
+
+class DiffusionAlgoCfg(TypedDict):
+    """SDE rollout algorithm knobs aligned with verl-omni `DiffusionRolloutAlgoConfig`."""
+
+    noise_level: float
+    sde_type: str
+    sde_window_size: NotRequired[int | None]
+    sde_window_range: NotRequired[list[int] | None]
+
+
+class DiffusionLoraCfg(TypedDict):
+    """LoRA adapter configuration."""
+
+    enabled: bool
+    rank: int
+    alpha: int
+    target_modules: list[str]
+    dropout: NotRequired[float]
+    exclude_modules: NotRequired[list[str] | None]
+
+
+class DiffusionPolicyConfig(TypedDict):
+    """Top-level configuration for the diffusion policy/worker.
+
+    Fields mirror `examples/configs/diffusion_grpo_qwen_image*.yaml`. Defaults live
+    in YAML per `config-conventions`; this TypedDict only declares types.
+    """
+
+    model_name: str
+    precision: str
+    train_global_batch_size: int
+    train_micro_batch_size: int
+    enable_gradient_checkpointing: bool
+    optimizer: dict[str, Any]
+    pipeline: DiffusionPipelineCfg
+    algo: DiffusionAlgoCfg
+    lora_cfg: DiffusionLoraCfg
+    reference_transformer_enabled: NotRequired[bool]
+    seed: NotRequired[int]
+
+
+class DiffusionGRPOAlgoConfig(TypedDict):
+    """Top-level diffusion-GRPO training-loop config."""
+
+    num_prompts_per_step: int
+    num_generations_per_prompt: int
+    max_num_steps: int
+    val_period: int
+    seed: int
+    ppo_epochs: NotRequired[int]
+    val_at_start: NotRequired[bool]
+    val_at_end: NotRequired[bool]
+    max_val_samples: NotRequired[int]
+    use_leave_one_out_baseline: NotRequired[bool]
+    normalize_rewards: NotRequired[bool]
+
+
+class DiffusionLossConfig(TypedDict):
+    """Diffusion-GRPO loss knobs aligned with verl-omni `FlowGRPOLoss` config."""
+
+    ratio_clip_min: float
+    ratio_clip_max: float
+    adv_clip_max: float
+    beta: float
+    # If True, sum logprobs over the T dimension before computing the ratio,
+    # so the loss is `mean_B(-adv_B * ratio_B)`. This matches verl-omni's
+    # 1-D-per-sample formulation. Default False uses per-(B, T) elements
+    # (Flow-GRPO paper formulation).
+    aggregate_logprobs_per_sample: NotRequired[bool]
+
+
 class DiffusionDatumSpec(TypedDict):
     prompt: str
     negative_prompt: NotRequired[str]

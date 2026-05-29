@@ -1,0 +1,85 @@
+# Diffusion-GRPO production configuration for Qwen-Image flow-grpo.
+# Sized for a multi-GPU node; for a single 16GB card use
+# `diffusion_grpo_qwen_image_tiny.yaml`.
+
+grpo:
+  num_prompts_per_step: 4
+  num_generations_per_prompt: 16
+  max_num_steps: 5000
+  val_period: 50
+  seed: 42
+  use_leave_one_out_baseline: true
+  normalize_rewards: true
+
+loss_fn:
+  ratio_clip_min: 0.2
+  ratio_clip_max: 0.2
+  adv_clip_max: 5.0
+  beta: 0.0
+
+checkpointing:
+  enabled: true
+  checkpoint_dir: "results/diffusion_grpo_qwen_image"
+  save_period: 100
+
+policy:
+  model_name: "Qwen/Qwen-Image"
+  precision: "bfloat16"
+  train_global_batch_size: 64
+  train_micro_batch_size: 2
+  enable_gradient_checkpointing: true
+  seed: 42
+
+  optimizer:
+    lr: 1.0e-5
+    weight_decay: 0.0
+    betas: [0.9, 0.999]
+
+  pipeline:
+    height: 512
+    width: 512
+    num_inference_steps: 16
+    true_cfg_scale: 4.0
+    max_sequence_length: 256
+    guidance_scale: null
+
+  algo:
+    noise_level: 0.7
+    sde_type: "sde"
+    sde_window_size: 6
+    sde_window_range: [0, 10]
+
+  lora_cfg:
+    enabled: true
+    rank: 32
+    alpha: 64
+    target_modules: ["to_q", "to_k", "to_v", "to_out.0"]
+    dropout: 0.0
+    exclude_modules: null
+
+data:
+  train:
+    prompt_file: "examples/data/diffusion/train_prompts.jsonl"
+  val:
+    prompt_file: "examples/data/diffusion/val_prompts.jsonl"
+
+env:
+  image_reward:
+    plugins:
+      - name: "dummy"
+        weight: 1.0
+    num_cpus_per_worker: 2
+    num_gpus_per_worker: 0.0
+
+cluster:
+  gpus_per_node: 8
+  num_nodes: 1
+
+logger:
+  log_dir: "logs/diffusion_grpo_qwen_image"
+  wandb_enabled: false
+  tensorboard_enabled: true
+  mlflow_enabled: false
+  swanlab_enabled: false
+  monitor_gpus: false
+  num_val_samples_to_print: 0

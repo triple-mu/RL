@@ -292,6 +292,7 @@ guides/router-replay.md
 guides/muon-optimizer.md
 guides/dtensor-tp-accuracy.md
 guides/ft-launcher-guide.md
+guides/diffusion-grpo.md
 ```
 
 ```{toctree}
@@ -332,6 +333,7 @@ design-docs/training-backends.md
 design-docs/sequence-packing-and-dynamic-batching.md
 design-docs/env-vars.md
 design-docs/nemo-gym-integration.md
+design-docs/diffusion-grpo.zh.md
 ```
 
 ```{toctree}

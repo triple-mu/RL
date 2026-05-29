@@ -1,0 +1,6 @@
+stack	step	policy_loss	mean_ratio	clipfrac	reward_mean	log
+nemo_rl	0	0.5436307191848755	1.000000238418579		-0.010993000119924545	reports/auto_research/2026-05-27-diffusion-grpo-verlomni-compare/run_nemorl_v2.log
+nemo_rl	1	-0.8138654828071594	0.9999994039535522		-0.010956000536680222	reports/auto_research/2026-05-27-diffusion-grpo-verlomni-compare/run_nemorl_v2.log
+nemo_rl	2	0.1828538328409195	1.0000026226043701		-0.010967999696731567	reports/auto_research/2026-05-27-diffusion-grpo-verlomni-compare/run_nemorl_v2.log
+nemo_rl	3	0.7906469106674194	0.9999998807907104		-0.010983500629663467	reports/auto_research/2026-05-27-diffusion-grpo-verlomni-compare/run_nemorl_v2.log
+nemo_rl	4	0.8083796501159668	0.9999992251396179		-0.010968999937176704	reports/auto_research/2026-05-27-diffusion-grpo-verlomni-compare/run_nemorl_v2.log
