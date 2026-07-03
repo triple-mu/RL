@@ -30,6 +30,7 @@ LoRA reference: when enabled, the reference-policy mean is computed by
 disabling the PEFT adapter on the *same* transformer instance, avoiding a
 duplicate model copy.
 """
+
 from __future__ import annotations
 
 import os
@@ -38,13 +39,9 @@ from typing import TYPE_CHECKING, Any
 import ray
 
 if TYPE_CHECKING:  # pragma: no cover
-    import torch
 
     from nemo_rl.models.diffusion.interfaces import (
-        DiffusionLossConfig,
         DiffusionPolicyConfig,
-        DiffusionTrainDataSpec,
-        DiffusionTrajectorySpec,
     )
 
 
@@ -56,12 +53,13 @@ class DiffusionPolicyWorker:  # pragma: no cover
     def configure_worker(
         num_gpus: int | float | None = None,
         bundle_indices: tuple[int, list[int]] | None = None,
-    ) -> tuple[dict[str, Any], dict[str, str], dict[str, Any]]:
-        """Returns (resources, env_vars, init_kwargs) for ``RayWorkerGroup``."""
+    ) -> tuple[dict[str, Any], dict[str, str], dict[str, Any], dict[str, Any]]:
+        """Returns (resources, env_vars, init_kwargs, runtime_env_overrides) for ``RayWorkerGroup``."""
         resources = {"num_gpus": 1, "num_cpus": 4}
         env_vars: dict[str, str] = {}
         init_kwargs: dict[str, Any] = {}
-        return resources, env_vars, init_kwargs
+        runtime_env_overrides: dict[str, Any] = {}
+        return resources, env_vars, init_kwargs, runtime_env_overrides
 
     def __init__(
         self,
@@ -94,9 +92,7 @@ class DiffusionPolicyWorker:  # pragma: no cover
                 backend="nccl", rank=rank, world_size=world_size
             )
 
-        self.device = torch.device(
-            "cuda" if torch.cuda.is_available() else "cpu"
-        )
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.dtype = self._parse_precision(config["precision"])
 
         self._load_pipeline()
@@ -129,9 +125,7 @@ class DiffusionPolicyWorker:  # pragma: no cover
         )
 
         model_name = self.config["model_name"]
-        pipe = QwenImagePipeline.from_pretrained(
-            model_name, torch_dtype=self.dtype
-        )
+        pipe = QwenImagePipeline.from_pretrained(model_name, torch_dtype=self.dtype)
         pipe.to(self.device)
         self._pipe = pipe
         self.transformer = pipe.transformer
@@ -169,6 +163,12 @@ class DiffusionPolicyWorker:  # pragma: no cover
             for p in module.parameters():
                 p.requires_grad_(False)
             module.eval()
+
+        # QwenImageTransformer2DModel gates on `torch.is_grad_enabled() and
+        # self.gradient_checkpointing`, so this is a no-op during no_grad
+        # rollout and only recomputes activations in the training recompute.
+        if self.config["enable_gradient_checkpointing"]:
+            self.transformer.enable_gradient_checkpointing()
 
     def _maybe_apply_lora(self) -> None:
         lora_cfg = self.config["lora_cfg"]
@@ -221,9 +221,7 @@ class DiffusionPolicyWorker:  # pragma: no cover
             device=self.device,
             dtype=self.dtype,
             forward_transformer_fn=self._forward_transformer_with_img_shapes,
-            per_element_logprob=bool(
-                self.config.get("per_element_logprob", False)
-            ),
+            per_element_logprob=bool(self.config.get("per_element_logprob", False)),
         )
 
     def _forward_transformer_with_img_shapes(self, transformer, **kwargs):
@@ -263,9 +261,7 @@ class DiffusionPolicyWorker:  # pragma: no cover
     # ------------------------------------------------------------------
     # Pipeline callbacks
     # ------------------------------------------------------------------
-    def _encode_condition(
-        self, prompts: list[str], negative_prompts: list[str]
-    ):
+    def _encode_condition(self, prompts: list[str], negative_prompts: list[str]):
         import torch
 
         with torch.no_grad():
@@ -403,9 +399,7 @@ class DiffusionPolicyWorker:  # pragma: no cover
         if self._loss_fn is None:
             self._loss_fn = DiffusionGRPOLossFn(loss_cfg)
         use_reference = float(loss_cfg["beta"]) > 0
-        recompute = self.compute_transition_logprob(
-            data, use_reference=use_reference
-        )
+        recompute = self.compute_transition_logprob(data, use_reference=use_reference)
         loss, metrics = self._loss_fn(
             curr_logprob=recompute["curr_logprob"],
             generation_logprob=data["generation_logprobs"],

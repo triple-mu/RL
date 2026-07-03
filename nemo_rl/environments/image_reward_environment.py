@@ -26,6 +26,7 @@ Plugin contract (:class:`BaseImageReward`):
   be 1-D with length equal to ``images.shape[0]``. Plugins may emit multiple
   component scores in the dict; aggregation sums all components.
 """
+
 import hashlib
 from typing import Any, Callable, Protocol
 
@@ -42,8 +43,7 @@ class BaseImageReward(Protocol):
         images: torch.Tensor,
         prompts: list[str],
         metadata: list[dict[str, Any]],
-    ) -> dict[str, torch.Tensor]:
-        ...
+    ) -> dict[str, torch.Tensor]: ...
 
 
 class DummyImageReward:
@@ -71,8 +71,7 @@ class DummyImageReward:
         prompt_scores = torch.tensor(
             [
                 # Stable hash → [0, 1) via the first 8 hex chars of sha256.
-                int(hashlib.sha256(p.encode("utf-8")).hexdigest()[:8], 16)
-                / 0x100000000
+                int(hashlib.sha256(p.encode("utf-8")).hexdigest()[:8], 16) / 0x100000000
                 for p in prompts
             ],
             dtype=torch.float32,
@@ -137,15 +136,84 @@ class JpegCompressibilityReward:
         return {"jpeg_compressibility": rewards}
 
 
+class PickScoreReward:
+    """Prompt-image preference score from PickScore-v1 (CLIP-H fine-tune).
+
+    Scores each image against its own prompt with
+    `logit_scale * cosine(text_emb, image_emb)` (raw scale ~16-26; the
+    GRPO group normalization makes the absolute scale irrelevant).
+
+    The model is ~4 GB; configure the reward pool with
+    `num_gpus_per_worker: 1` to run it on GPU. Images arrive as CPU
+    NCHW float [0,1] tensors and scores are returned on CPU, matching
+    the trainer's device convention.
+    """
+
+    name: str = "pickscore"
+    weight: float = 1.0
+
+    model_name: str = "yuvalkirstain/PickScore_v1"
+    processor_name: str = "laion/CLIP-ViT-H-14-laion2B-s32B-b79K"
+    batch_size: int = 16
+
+    def __init__(self) -> None:
+        # Deferred heavy imports: the factory is pickled into the Ray actor.
+        import torch as _torch
+        from transformers import AutoModel, AutoProcessor
+
+        self._device = "cuda" if _torch.cuda.is_available() else "cpu"
+        self._processor = AutoProcessor.from_pretrained(self.processor_name)
+        self._model = AutoModel.from_pretrained(self.model_name).eval().to(self._device)
+
+    def score(
+        self,
+        images: torch.Tensor,
+        prompts: list[str],
+        metadata: list[dict[str, Any]],
+    ) -> dict[str, torch.Tensor]:
+        from PIL import Image
+
+        if images.shape[0] != len(prompts):
+            raise ValueError(
+                f"images batch={images.shape[0]} but prompts len={len(prompts)}"
+            )
+        arr = (images * 255).round().clamp(0, 255).to(torch.uint8).cpu().numpy()
+        pil_images = [Image.fromarray(a.transpose(1, 2, 0)) for a in arr]
+
+        scores: list[torch.Tensor] = []
+        with torch.no_grad():
+            for start in range(0, len(pil_images), self.batch_size):
+                chunk_imgs = pil_images[start : start + self.batch_size]
+                chunk_prompts = prompts[start : start + self.batch_size]
+                image_inputs = self._processor(
+                    images=chunk_imgs, return_tensors="pt"
+                ).to(self._device)
+                text_inputs = self._processor(
+                    text=chunk_prompts,
+                    padding=True,
+                    truncation=True,
+                    max_length=77,
+                    return_tensors="pt",
+                ).to(self._device)
+                image_embs = self._model.get_image_features(**image_inputs)
+                image_embs = image_embs / image_embs.norm(dim=-1, keepdim=True)
+                text_embs = self._model.get_text_features(**text_inputs)
+                text_embs = text_embs / text_embs.norm(dim=-1, keepdim=True)
+                chunk_scores = self._model.logit_scale.exp() * (
+                    text_embs * image_embs
+                ).sum(dim=-1)
+                scores.append(chunk_scores.float().cpu())
+        return {"pickscore": torch.cat(scores)}
+
+
 _PLUGIN_REGISTRY: dict[str, Callable[[], BaseImageReward]] = {
     "dummy": lambda: DummyImageReward(),
     "jpeg_compressibility": lambda: JpegCompressibilityReward(),
+    "pickscore": lambda: PickScoreReward(),
 }
 
 
-def register_image_reward(
-    name: str, factory: Callable[[], BaseImageReward]
-) -> None:
+def register_image_reward(name: str, factory: Callable[[], BaseImageReward]) -> None:
     """Register a new reward plugin factory."""
     if name in _PLUGIN_REGISTRY:
         raise ValueError(f"Image reward plugin {name!r} is already registered")
@@ -190,16 +258,12 @@ class ImageRewardEnvironment:
         prompts: list[str],
         metadata: list[dict[str, Any]],
     ) -> tuple[torch.Tensor, dict[str, Any]]:
-        futures = [
-            w.score.remote(images, prompts, metadata) for w in self._workers
-        ]
+        futures = [w.score.remote(images, prompts, metadata) for w in self._workers]
         per_worker_results: list[dict[str, torch.Tensor]] = ray.get(futures)
 
         total = torch.zeros(images.shape[0], dtype=torch.float32)
         components: dict[str, torch.Tensor] = {}
-        for name, weight, result in zip(
-            self._names, self._weights, per_worker_results
-        ):
+        for name, weight, result in zip(self._names, self._weights, per_worker_results):
             for comp_key, comp_value in result.items():
                 full_key = f"{name}/{comp_key}"
                 components[full_key] = comp_value

@@ -16,8 +16,10 @@ import ray
 import torch
 
 from nemo_rl.environments.image_reward_environment import (
+    _PLUGIN_REGISTRY,
     DummyImageReward,
     ImageRewardEnvironment,
+    PickScoreReward,
     register_image_reward,
 )
 
@@ -94,6 +96,66 @@ def test_image_reward_environment_two_plugins_sum(ray_init_and_shutdown):  # noq
         from nemo_rl.environments.image_reward_environment import _PLUGIN_REGISTRY
 
         _PLUGIN_REGISTRY.pop("half", None)
+
+
+def test_pickscore_is_registered():
+    assert "pickscore" in _PLUGIN_REGISTRY
+
+
+class _FakeBatch(dict):
+    def to(self, device):
+        return self
+
+
+class _FakeCLIPProcessor:
+    """Mimics the AutoProcessor call signatures used by PickScoreReward."""
+
+    def __call__(self, images=None, text=None, return_tensors="pt", **kwargs):
+        if images is not None:
+            return _FakeBatch(n=torch.arange(len(images)))
+        return _FakeBatch(flags=torch.tensor([1 if t == "match" else 0 for t in text]))
+
+
+class _FakeCLIPModel:
+    """Image embeddings are always [1, 0]; text embeddings are [1, 0] for
+    the prompt "match" and [0, 1] otherwise, so paired cosine is 1 or 0."""
+
+    logit_scale = torch.tensor(0.0)  # exp() == 1.0
+
+    def get_image_features(self, n):
+        return torch.tensor([[1.0, 0.0]]).expand(n.shape[0], -1)
+
+    def get_text_features(self, flags):
+        out = torch.zeros(flags.shape[0], 2)
+        out[flags == 1, 0] = 1.0
+        out[flags == 0, 1] = 1.0
+        return out
+
+
+def _make_fake_pickscore() -> PickScoreReward:
+    plugin = PickScoreReward.__new__(PickScoreReward)
+    plugin._device = "cpu"
+    plugin._processor = _FakeCLIPProcessor()
+    plugin._model = _FakeCLIPModel()
+    return plugin
+
+
+def test_pickscore_pairs_each_image_with_its_own_prompt():
+    plugin = _make_fake_pickscore()
+    plugin.batch_size = 2  # 3 images → exercises the chunked loop
+    images = torch.rand(3, 3, 8, 8)
+    scores = plugin.score(images, ["match", "other", "match"], [{}, {}, {}])
+    result = scores["pickscore"]
+    assert result.shape == (3,)
+    assert result.dtype == torch.float32
+    assert result.device.type == "cpu"
+    assert torch.allclose(result, torch.tensor([1.0, 0.0, 1.0]))
+
+
+def test_pickscore_rejects_size_mismatch():
+    plugin = _make_fake_pickscore()
+    with pytest.raises(ValueError, match="prompts len"):
+        plugin.score(torch.rand(2, 3, 8, 8), ["only one"], [{}])
 
 
 @pytest.fixture

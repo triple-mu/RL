@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """Entrypoint for diffusion-GRPO training (Qwen-Image flow-grpo)."""
+
 import argparse
 import os
 import pprint
@@ -70,7 +71,8 @@ def main() -> None:
 
     cluster_cfg = cfg["cluster"]
     cluster = RayVirtualCluster(
-        bundle_ct_per_node_list=[cluster_cfg["gpus_per_node"]] * cluster_cfg["num_nodes"],
+        bundle_ct_per_node_list=[cluster_cfg["gpus_per_node"]]
+        * cluster_cfg["num_nodes"],
         use_gpus=True,
         max_colocated_worker_groups=1,
     )
@@ -124,6 +126,10 @@ def main() -> None:
             if cfg["checkpointing"].get("enabled")
             else None,
             save_period=int(cfg["checkpointing"].get("save_period", 0)),
+            val_image_dir=os.path.join(cfg["logger"]["log_dir"], "val_images"),
+            num_val_images_to_save=int(
+                cfg["logger"].get("num_val_samples_to_print", 0)
+            ),
         )
     finally:
         env.shutdown()
