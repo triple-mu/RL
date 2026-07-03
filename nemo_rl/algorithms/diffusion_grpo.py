@@ -22,8 +22,10 @@ The advantage estimator reuses
 encoding each unique prompt as a ``(1,)`` integer tensor row, then
 broadcasting the resulting per-sample advantage to ``[B*K, T]``.
 """
+
 from __future__ import annotations
 
+import json
 import os
 from typing import Any, Iterable
 
@@ -121,11 +123,30 @@ def diffusion_grpo_train(
     logger: Logger,
     checkpoint_dir: str | None,
     save_period: int = 0,
+    val_image_dir: str | None = None,
+    num_val_images_to_save: int = 0,
 ) -> None:
     timer = Timer()
     K = algo_cfg["num_generations_per_prompt"]
     max_steps = algo_cfg["max_num_steps"]
     seed_base = int(algo_cfg.get("seed", 0))
+
+    def run_validation(step: int) -> None:
+        _run_validation(
+            policy,
+            env,
+            val_dataloader,
+            step=step,
+            logger=logger,
+            seed=seed_base,
+            max_val_samples=int(algo_cfg.get("max_val_samples", 0)),
+            image_dir=val_image_dir,
+            num_images_to_save=num_val_images_to_save,
+        )
+
+    if val_dataloader is not None and bool(algo_cfg.get("val_at_start", False)):
+        # step=-1 → images land in `step_0/` as the pre-training baseline.
+        run_validation(step=-1)
 
     train_iter = iter(train_dataloader)
     for step in range(max_steps):
@@ -162,10 +183,14 @@ def diffusion_grpo_train(
                 ),
             )
 
-        loss_mult = torch.tensor(
-            [m.get("loss_multiplier", 1.0) for m in traj["metadata"]],
-            dtype=torch.float32,
-        ) if traj["metadata"] else torch.ones(rewards.shape[0])
+        loss_mult = (
+            torch.tensor(
+                [m.get("loss_multiplier", 1.0) for m in traj["metadata"]],
+                dtype=torch.float32,
+            )
+            if traj["metadata"]
+            else torch.ones(rewards.shape[0])
+        )
 
         train_data = _build_train_data(
             traj,
@@ -186,9 +211,7 @@ def diffusion_grpo_train(
             if ppo_epochs > 1:
                 for i, m in enumerate(per_epoch_metrics):
                     train_metrics[f"epoch_{i}/loss"] = m.get("loss", 0.0)
-                    train_metrics[f"epoch_{i}/mean_ratio"] = m.get(
-                        "mean_ratio", 1.0
-                    )
+                    train_metrics[f"epoch_{i}/mean_ratio"] = m.get("mean_ratio", 1.0)
 
         metrics = {
             **{f"train/{k}": v for k, v in train_metrics.items()},
@@ -215,9 +238,7 @@ def diffusion_grpo_train(
             for i in range(ppo_epochs)
             if f"train/epoch_{i}/loss" in metrics
         ]
-        avg_loss = (
-            sum(epoch_losses) / len(epoch_losses) if epoch_losses else loss_val
-        )
+        avg_loss = sum(epoch_losses) / len(epoch_losses) if epoch_losses else loss_val
         print(
             f"[diffusion_grpo] step={step} "
             f"train/loss_last={loss_val} train/loss_avg={avg_loss} "
@@ -235,7 +256,10 @@ def diffusion_grpo_train(
         if val_dataloader is not None:
             val_period = int(algo_cfg.get("val_period", 0))
             if val_period > 0 and (step + 1) % val_period == 0:
-                _run_validation(policy, env, val_dataloader, step=step, logger=logger, K=K)
+                run_validation(step=step)
+
+    if val_dataloader is not None and bool(algo_cfg.get("val_at_end", False)):
+        run_validation(step=max_steps - 1)
 
 
 def _run_validation(
@@ -245,22 +269,85 @@ def _run_validation(
     *,
     step: int,
     logger: Logger,
-    K: int,
+    seed: int,
+    max_val_samples: int = 0,
+    image_dir: str | None = None,
+    num_images_to_save: int = 0,
 ) -> None:
-    rewards_acc: list[float] = []
+    """Score the val set with K=1 and a fixed seed.
+
+    The fixed seed keeps initial latents identical across successive
+    validations, so `val/reward_mean` and the saved images are comparable
+    over training steps.
+    """
+    rewards_acc: list[torch.Tensor] = []
+    n_prompts = 0
+    saved = 0
+    out_dir = (
+        os.path.join(image_dir, f"step_{step + 1}") if image_dir is not None else None
+    )
     for batch in val_dataloader:
         traj = policy.sample_trajectory(
             prompts=batch["prompts"],
             negative_prompts=batch["negative_prompts"],
             metadata=batch["metadata"],
-            K=K,
-            seed=None,
+            K=1,
+            seed=seed,
         )
-        rewards, _ = env.score_images(
-            traj["images"], traj["prompts"], traj["metadata"]
-        )
-        rewards_acc.append(float(rewards.mean().item()))
+        # Reward workers may be CPU-only; keep CUDA tensors trainer-local
+        # (same convention as the training path).
+        images_cpu = traj["images"].detach().to("cpu")
+        rewards, _ = env.score_images(images_cpu, traj["prompts"], traj["metadata"])
+        rewards_acc.append(rewards.float())
+        if out_dir is not None and saved < num_images_to_save:
+            saved += _save_val_images(
+                images_cpu,
+                traj["prompts"],
+                rewards,
+                out_dir=out_dir,
+                offset=saved,
+                limit=num_images_to_save - saved,
+            )
+        n_prompts += len(batch["prompts"])
+        if max_val_samples > 0 and n_prompts >= max_val_samples:
+            break
     if rewards_acc:
+        all_rewards = torch.cat(rewards_acc)
         logger.log_metrics(
-            {"val/reward_mean": sum(rewards_acc) / len(rewards_acc)}, step=step
+            {"val/reward_mean": float(all_rewards.mean().item())},
+            step=max(step, 0),
         )
+
+
+def _save_val_images(
+    images: torch.Tensor,
+    prompts: list[str],
+    rewards: torch.Tensor,
+    *,
+    out_dir: str,
+    offset: int,
+    limit: int,
+) -> int:
+    """Save up to `limit` images (NCHW float [0,1]) as PNGs; returns the count."""
+    from PIL import Image
+
+    os.makedirs(out_dir, exist_ok=True)
+    n = min(limit, images.shape[0])
+    with open(os.path.join(out_dir, "prompts.jsonl"), "a", encoding="utf-8") as f:
+        for i in range(n):
+            arr = (images[i] * 255).round().clamp(0, 255).to(torch.uint8)
+            Image.fromarray(arr.permute(1, 2, 0).numpy()).save(
+                os.path.join(out_dir, f"{offset + i:03d}.png")
+            )
+            f.write(
+                json.dumps(
+                    {
+                        "idx": offset + i,
+                        "prompt": prompts[i],
+                        "reward": float(rewards[i]),
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n"
+            )
+    return n
