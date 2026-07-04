@@ -21,6 +21,7 @@ from omegaconf import OmegaConf
 from torch.utils.data import DataLoader
 
 from nemo_rl.algorithms.diffusion_grpo import diffusion_grpo_train
+from nemo_rl.algorithms.utils import set_seed
 from nemo_rl.data.datasets.text_to_image_prompt import (
     TextToImagePromptDataset,
     text_to_image_collate_fn,
@@ -66,6 +67,10 @@ def main() -> None:
 
     cfg["logger"]["log_dir"] = get_next_experiment_dir(cfg["logger"]["log_dir"])
     print(f"📊 log_dir: {cfg['logger']['log_dir']}")
+
+    # Seed the driver process too: DataLoader(shuffle=True) draws from the
+    # global RNG, so without this the prompt order differs across runs.
+    set_seed(int(cfg["grpo"].get("seed", 42)))
 
     init_ray()
 

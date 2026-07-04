@@ -39,7 +39,6 @@ from typing import TYPE_CHECKING, Any
 import ray
 
 if TYPE_CHECKING:  # pragma: no cover
-
     from nemo_rl.models.diffusion.interfaces import (
         DiffusionPolicyConfig,
     )
@@ -399,31 +398,44 @@ class DiffusionPolicyWorker:  # pragma: no cover
         if self._loss_fn is None:
             self._loss_fn = DiffusionGRPOLossFn(loss_cfg)
         use_reference = float(loss_cfg["beta"]) > 0
-        recompute = self.compute_transition_logprob(data, use_reference=use_reference)
-        loss, metrics = self._loss_fn(
-            curr_logprob=recompute["curr_logprob"],
-            generation_logprob=data["generation_logprobs"],
-            advantages=data["advantages"],
-            timestep_mask=data["timestep_mask"],
-            sample_mask=data["sample_mask"],
-            current_mean=recompute["current_mean"],
-            reference_mean=recompute["reference_mean"],
-            std_dev=recompute["std_dev"],
-        )
+
+        # Gradient accumulation over sample-dimension chunks so the
+        # with-grad T-step recompute only holds `micro` samples' activations
+        # at a time. Chunk losses are weighted by sample count, which matches
+        # the full-batch masked_mean when masks are uniform across samples.
+        total = int(data["generation_logprobs"].shape[0])
+        micro = int(self.config.get("train_micro_batch_size") or 0) or total
         self.optimizer.zero_grad(set_to_none=True)
-        loss.backward()
+        loss_acc = 0.0
+        metrics_acc: dict[str, float] = {}
+        for start in range(0, total, micro):
+            end = min(start + micro, total)
+            chunk = data.slice(start, end)
+            weight = (end - start) / total
+            recompute = self.compute_transition_logprob(
+                chunk, use_reference=use_reference
+            )
+            loss, metrics = self._loss_fn(
+                curr_logprob=recompute["curr_logprob"],
+                generation_logprob=chunk["generation_logprobs"],
+                advantages=chunk["advantages"],
+                timestep_mask=chunk["timestep_mask"],
+                sample_mask=chunk["sample_mask"],
+                current_mean=recompute["current_mean"],
+                reference_mean=recompute["reference_mean"],
+                std_dev=recompute["std_dev"],
+            )
+            (loss * weight).backward()
+            loss_acc += float(loss.detach().item()) * weight
+            for k, v in metrics.items():
+                v = float(v.item()) if torch.is_tensor(v) else float(v)
+                metrics_acc[k] = metrics_acc.get(k, 0.0) + v * weight
         torch.nn.utils.clip_grad_norm_(
             (p for p in self.transformer.parameters() if p.requires_grad),
             max_norm=1.0,
         )
         self.optimizer.step()
-        return {
-            "loss": float(loss.detach().item()),
-            **{
-                k: float(v.item()) if torch.is_tensor(v) else float(v)
-                for k, v in metrics.items()
-            },
-        }
+        return {"loss": loss_acc, **metrics_acc}
 
     def save_checkpoint(self, path: str) -> None:
         import torch
