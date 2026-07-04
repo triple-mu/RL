@@ -112,24 +112,28 @@ class _FakeCLIPProcessor:
 
     def __call__(self, images=None, text=None, return_tensors="pt", **kwargs):
         if images is not None:
-            return _FakeBatch(n=torch.arange(len(images)))
-        return _FakeBatch(flags=torch.tensor([1 if t == "match" else 0 for t in text]))
+            return _FakeBatch(pixel_values=torch.zeros(len(images), 1))
+        return _FakeBatch(
+            input_ids=torch.tensor([1 if t == "match" else 0 for t in text]),
+            attention_mask=torch.ones(len(text)),
+        )
 
 
 class _FakeCLIPModel:
     """Image embeddings are always [1, 0]; text embeddings are [1, 0] for
-    the prompt "match" and [0, 1] otherwise, so paired cosine is 1 or 0."""
+    the prompt "match" and [0, 1] otherwise, so the paired (diagonal)
+    logits_per_image score is 1 or 0."""
 
-    logit_scale = torch.tensor(0.0)  # exp() == 1.0
+    def __call__(self, input_ids=None, attention_mask=None, pixel_values=None):
+        image_embs = torch.tensor([[1.0, 0.0]]).expand(pixel_values.shape[0], -1)
+        text_embs = torch.zeros(input_ids.shape[0], 2)
+        text_embs[input_ids == 1, 0] = 1.0
+        text_embs[input_ids == 0, 1] = 1.0
 
-    def get_image_features(self, n):
-        return torch.tensor([[1.0, 0.0]]).expand(n.shape[0], -1)
+        class _Out:
+            logits_per_image = image_embs @ text_embs.T
 
-    def get_text_features(self, flags):
-        out = torch.zeros(flags.shape[0], 2)
-        out[flags == 1, 0] = 1.0
-        out[flags == 0, 1] = 1.0
-        return out
+        return _Out()
 
 
 def _make_fake_pickscore() -> PickScoreReward:
