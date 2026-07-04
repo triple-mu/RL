@@ -195,14 +195,15 @@ class PickScoreReward:
                     max_length=77,
                     return_tensors="pt",
                 ).to(self._device)
-                image_embs = self._model.get_image_features(**image_inputs)
-                image_embs = image_embs / image_embs.norm(dim=-1, keepdim=True)
-                text_embs = self._model.get_text_features(**text_inputs)
-                text_embs = text_embs / text_embs.norm(dim=-1, keepdim=True)
-                chunk_scores = self._model.logit_scale.exp() * (
-                    text_embs * image_embs
-                ).sum(dim=-1)
-                scores.append(chunk_scores.float().cpu())
+                # Full forward: `logits_per_image` applies logit_scale to the
+                # normalized embeddings and is stable across transformers 4/5
+                # (get_*_features returns a ModelOutput in transformers 5.x).
+                outputs = self._model(
+                    input_ids=text_inputs["input_ids"],
+                    attention_mask=text_inputs.get("attention_mask"),
+                    pixel_values=image_inputs["pixel_values"],
+                )
+                scores.append(outputs.logits_per_image.diagonal().float().cpu())
         return {"pickscore": torch.cat(scores)}
 
 
