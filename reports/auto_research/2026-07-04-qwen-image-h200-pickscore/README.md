@@ -59,11 +59,44 @@
 
 ## 五、下一步建议（按性价比排序）
 
-1. **多卡 DP**（8×H200 → 每步 128 图，约等于 Flow-GRPO 论文量级）：需要接线 rank/world_size
-   ＋数据分片＋梯度 all-reduce，是拿到论文级曲线的最短路径。
+1. ~~**多卡 DP**~~ **已完成（2026-07-06，commit 508d5f7c）**，见第八节。
 2. **lr scheduler**（warmup + cosine decay）＋更长训练（2000 步）。
 3. LoRA targets 扩展到 MLP（img_mlp/txt_mlp），rank 64。
 4. KL 正则（beta>0，代码已支持 LoRA disable_adapter 参考策略）抑制末段漂移。
+
+## 八、后续：数据并行（DP）落地与实测（2026-07-06）
+
+实现（commit `508d5f7c`）：worker 读 RayWorkerGroup 注入的 RANK/WORLD_SIZE 组
+NCCL 组；train_step 在 micro-batch 累积后对 LoRA 梯度 all-reduce(AVG)；rank0-only
+checkpoint；policy 层按 prompt scatter rollout（每 rank 派生 seed）、同序 scatter
+训练数据、gather 时 ragged seq 维 pad。经 3 视角对抗审查（7 条确认发现全部修复，
+包括一个**单卡也受影响的 seed 复用 bug**：step-0 SDE 噪声曾是初始 latent 的重排
+副本，已改用 seed+1 派生——exp_004~006 均受此影响，后续长跑预期信噪比更好）。
+
+实测（hyper01）：
+
+| 配置 | 每步图像 | rollout | train | 单步合计 | dp_checksum_spread |
+|---|---|---|---|---|---|
+| exp_006 单卡 | 16 | 15.7 s | 52.1 s | ~68 s | - |
+| exp_007 **7 卡 DP** + 1 卡 reward | **112** | 17.7 s | 57.1 s | ~76 s | **0.0（全程）** |
+
+**7× 样本量、单步仅 +11% → 有效吞吐 ≈ 6.3×**；tiny 2 卡与真模型 7 卡的
+checksum spread 全程为 0（各 rank 权重逐位一致）。8 卡全 DP 需把 PickScore
+挪出 GPU（或与训练卡共存），当前 7+1 划分是零冲突方案。
+
+复现：`uv run python examples/run_diffusion_grpo.py --config
+examples/configs/diffusion_grpo_qwen_image_h200.yaml cluster.gpus_per_node=7
+grpo.num_prompts_per_step=7`
+
+### 其他并行策略评估（为什么先做 DP、其他何时做）
+
+| 策略 | 本场景必要性 | 实现+测试成本 | 结论 |
+|---|---|---|---|
+| **DP** | 高：GRPO 瓶颈=每步样本量 | 低；**易测**（不变量清晰：rank 权重逐位一致，checksum 断言 + tiny 2 卡分钟级验证） | ✅ 已投产 |
+| **FSDP2** | LoRA 下无必要（冻结 40GB<141GB、可训练 ~50MB）；**全参微调时必需**（AdamW 状态 ~160GB） | 中；可测（tiny 2 卡对比单卡 loss，注意 PEFT+FSDP2 兼容坑） | ⏭ 全参时再做 |
+| **TP** | 低：单卡装得下 | 高：diffusers MMDiT 无现成 plan，需手写切分+逐层 parity 验证，**难测** | ❌ 不建议 |
+| **SP/CP** | 低：512²=4096 token；1328²（16K token）才有价值 | 高：ring/ulysses 侵入 attention，难测 | ⏭ 高分辨率再评估 |
+| **rollout 引擎分离**（verl 式，容器已有 vllm-omni） | 中：rollout 占 ~23% 单步耗时，可加速 2-5× + 异步流水 | 高：需权重 refit + **跨引擎 logprob parity 测试**（不一致即破坏 on-policy 假设，是最难测的一类） | ⏭ 独立立项 |
 
 ## 六、复现
 
