@@ -244,10 +244,12 @@ def diffusion_grpo_train(
             if f"train/epoch_{i}/loss" in metrics
         ]
         avg_loss = sum(epoch_losses) / len(epoch_losses) if epoch_losses else loss_val
+        spread = metrics.get("train/dp_checksum_spread")
         print(
             f"[diffusion_grpo] step={step} "
             f"train/loss_last={loss_val} train/loss_avg={avg_loss} "
-            f"train/mean_ratio={ratio_val} train/reward_mean={rew_val}",
+            f"train/mean_ratio={ratio_val} train/reward_mean={rew_val}"
+            + (f" train/dp_checksum_spread={spread}" if spread is not None else ""),
             flush=True,
         )
 
