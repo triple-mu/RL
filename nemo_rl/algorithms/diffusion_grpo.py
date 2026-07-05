@@ -220,6 +220,11 @@ def diffusion_grpo_train(
             "train/advantage_std": float(advantages_per_sample.std().item()),
             "train/reward_mean": float(rewards.mean().item()),
         }
+        if policy.num_workers > 1:
+            # All-reduced DP ranks must hold identical weights; a non-zero
+            # spread means gradient sync is broken.
+            checksums = policy.trainable_checksums()
+            metrics["train/dp_checksum_spread"] = float(max(checksums) - min(checksums))
         for tag, dur in timer.get_timing_metrics(reduction_op="mean").items():
             if isinstance(dur, float):
                 metrics[f"timing/{tag}_s"] = dur

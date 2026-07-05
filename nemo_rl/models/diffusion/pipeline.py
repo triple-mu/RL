@@ -28,6 +28,7 @@ CFG aggregation follows verl-omni
 ``pipelines/qwen_image_flow_grpo/common.py::apply_true_cfg`` — additive guidance
 with norm rescale toward the conditional branch.
 """
+
 from typing import Any, Callable
 
 import torch
@@ -80,9 +81,7 @@ class QwenImagePipelineAdapter:
         scheduler: Any,
         pipeline_cfg: DiffusionPipelineCfg,
         algo_cfg: DiffusionAlgoCfg,
-        encode_condition_fn: Callable[
-            [list[str], list[str]], dict[str, torch.Tensor]
-        ]
+        encode_condition_fn: Callable[[list[str], list[str]], dict[str, torch.Tensor]]
         | None = None,
         decode_fn: Callable[[torch.Tensor], torch.Tensor] | None = None,
         prepare_initial_latents_fn: Callable[[int, int | None], torch.Tensor]
@@ -162,8 +161,13 @@ class QwenImagePipelineAdapter:
 
         latents_history = [latents]
         logprobs: list[torch.Tensor] = []
+        # Derive a distinct seed for the SDE noise: _prepare_initial_latents
+        # already consumed a generator seeded with `seed`, and two fresh
+        # generators with the same seed produce identical Philox streams —
+        # the step-0 variance noise would be a permutation of the initial
+        # latents, correlating the transition with its own input.
         generator = (
-            torch.Generator(device=self.device).manual_seed(seed)
+            torch.Generator(device=self.device).manual_seed(seed + 1)
             if seed is not None
             else None
         )
@@ -217,8 +221,10 @@ class QwenImagePipelineAdapter:
         use_reference: bool = False,
         reference_forward_fn: Callable[..., torch.Tensor] | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor | None]:
-        latents = data["latents"]            # [B, T+1, ...]
-        timesteps = data["timesteps"]        # [B, T] in {0..T-1} indexing into scheduler.timesteps
+        latents = data["latents"]  # [B, T+1, ...]
+        timesteps = data[
+            "timesteps"
+        ]  # [B, T] in {0..T-1} indexing into scheduler.timesteps
         prompt_embeds = data["prompt_embeds"]
         prompt_embeds_mask = data["prompt_embeds_mask"]
         negative_prompt_embeds = data["negative_prompt_embeds"]
@@ -274,9 +280,7 @@ class QwenImagePipelineAdapter:
         curr = torch.stack(curr_logprobs, dim=1)
         means = torch.stack(current_means, dim=1)
         stds = torch.stack(std_devs, dim=1)
-        refs = (
-            torch.stack(reference_means, dim=1) if reference_means else None
-        )
+        refs = torch.stack(reference_means, dim=1) if reference_means else None
         return curr, means, stds, refs  # type: ignore[return-value]
 
     # ------------------------------------------------------------------
@@ -338,7 +342,8 @@ class QwenImagePipelineAdapter:
 
     def normalize_timestep(self, t: torch.Tensor | float) -> torch.Tensor:
         """Public alias for normalizing a raw scheduler timestep into the
-        transformer's expected range (Qwen-Image divides by 1000)."""
+        transformer's expected range (Qwen-Image divides by 1000).
+        """
         return self._normalize_timestep(t)
 
     def _prepare_initial_latents(
