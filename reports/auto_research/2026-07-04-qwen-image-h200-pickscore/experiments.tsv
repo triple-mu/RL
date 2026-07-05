@@ -1,0 +1,4 @@
+exp	date	model	gpus	lr	K	B	T	res	micro_batch	steps	val_reward_start	val_reward_peak	val_reward_end	wall_per_step_s	checkpoint	log
+exp_004	2026-07-03	Qwen/Qwen-Image	1xH200(train)+1(reward)	1e-5	8	1	10	512	-	84(手动停)	21.473	21.495	21.455	40	-	hyper01:/data/logs/train_1000.log
+exp_005	2026-07-04	Qwen/Qwen-Image	1xH200(train)+1(reward)	1e-4	8	1	10	512	-	107(手动停)	21.473	21.488	21.488	40	-	hyper01:/data/logs/train_1000_lr1e4.log
+exp_006	2026-07-04	Qwen/Qwen-Image	1xH200(train)+1(reward)	1e-4	16	1	10	512	8	600(完成)	21.473	21.605@359	21.467	72	hyper01:/data/workspace/RL/RL/results/diffusion_grpo_qwen_image_h200/step_{50..600}	hyper01:/data/logs/train_600_k16.log
