@@ -74,21 +74,30 @@ class DiffusionPolicyWorker:  # pragma: no cover
         from nemo_rl.algorithms.utils import set_seed
 
         self.config = config
-        self.rank = rank
-        self.world_size = world_size
+        # RayWorkerGroup injects RANK/WORLD_SIZE/MASTER_ADDR/MASTER_PORT env
+        # vars per worker; the ctor args only serve as fallbacks outside it.
+        self.rank = int(os.environ.get("RANK", rank))
+        self.world_size = int(os.environ.get("WORLD_SIZE", world_size))
 
         if "seed" in config:
             set_seed(int(config["seed"]))
+        elif self.world_size > 1:
+            # DP correctness relies on every rank materializing bit-identical
+            # LoRA init; without a shared seed the ranks silently diverge.
+            raise ValueError(
+                "policy.seed is required when running data-parallel "
+                f"(world_size={self.world_size})"
+            )
 
         os.environ.setdefault("MASTER_ADDR", master_addr)
         os.environ.setdefault("MASTER_PORT", str(master_port))
-        os.environ.setdefault("RANK", str(rank))
-        os.environ.setdefault("WORLD_SIZE", str(world_size))
+        os.environ.setdefault("RANK", str(self.rank))
+        os.environ.setdefault("WORLD_SIZE", str(self.world_size))
         os.environ.setdefault("LOCAL_RANK", "0")
 
         if torch.cuda.is_available() and not torch.distributed.is_initialized():
             torch.distributed.init_process_group(
-                backend="nccl", rank=rank, world_size=world_size
+                backend="nccl", rank=self.rank, world_size=self.world_size
             )
 
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -430,6 +439,14 @@ class DiffusionPolicyWorker:  # pragma: no cover
             for k, v in metrics.items():
                 v = float(v.item()) if torch.is_tensor(v) else float(v)
                 metrics_acc[k] = metrics_acc.get(k, 0.0) + v * weight
+        if self.world_size > 1 and torch.distributed.is_initialized():
+            # Data-parallel: average trainable grads across ranks so every
+            # optimizer step applies the identical global update.
+            for p in self.transformer.parameters():
+                if p.requires_grad and p.grad is not None:
+                    torch.distributed.all_reduce(
+                        p.grad, op=torch.distributed.ReduceOp.AVG
+                    )
         torch.nn.utils.clip_grad_norm_(
             (p for p in self.transformer.parameters() if p.requires_grad),
             max_norm=1.0,
@@ -437,9 +454,26 @@ class DiffusionPolicyWorker:  # pragma: no cover
         self.optimizer.step()
         return {"loss": loss_acc, **metrics_acc}
 
+    def report_trainable_checksum(self) -> float:
+        """Sum of all trainable params — DP ranks must agree after each step."""
+        import torch
+
+        with torch.no_grad():
+            return float(
+                sum(
+                    p.double().sum().item()
+                    for p in self.transformer.parameters()
+                    if p.requires_grad
+                )
+            )
+
     def save_checkpoint(self, path: str) -> None:
         import torch
 
+        # DP ranks hold identical weights after the all-reduced step; only
+        # rank 0 writes to avoid concurrent writes to the same path.
+        if self.rank != 0:
+            return
         os.makedirs(path, exist_ok=True)
         if self._lora_enabled:
             self.transformer.save_pretrained(path)

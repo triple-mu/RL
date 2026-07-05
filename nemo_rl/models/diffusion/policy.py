@@ -15,18 +15,26 @@
 
 Owns one :class:`nemo_rl.distributed.worker_groups.RayWorkerGroup` of
 :class:`nemo_rl.models.diffusion.workers.diffusion_worker.DiffusionPolicyWorker`
-actors. For v1 single-GPU smoke runs the group contains exactly one worker;
-multi-GPU sharding (FSDP2 + DP) will be added in a follow-up that introduces
-the diffusion-side sharding annotations.
+actors. With N workers (``cluster.gpus_per_node = N``) the policy runs
+data-parallel: rollout prompts are scattered across workers (each worker gets
+a distinct seed), trajectories are gathered/concatenated on the controller,
+and training data is re-scattered along the same split; workers all-reduce
+their gradients so every rank applies the identical update.
+
+``sample_trajectory`` falls back to worker 0 when the prompt count doesn't
+split evenly (e.g. the K=1 validation path); training requires
+``num_prompts_per_step % num_workers == 0``.
 
 Method names mirror the API the trainer calls: ``sample_trajectory``,
 ``compute_transition_logprob``, ``train``, ``save_checkpoint``, ``shutdown``.
 """
+
 from __future__ import annotations
 
 from typing import Any
 
 import ray
+import torch
 
 from nemo_rl.distributed.virtual_cluster import RayVirtualCluster
 from nemo_rl.distributed.worker_groups import RayWorkerBuilder, RayWorkerGroup
@@ -71,10 +79,42 @@ class DiffusionPolicy:
         single-worker v1.
         """
         futures = [
-            getattr(w, method_name).remote(**kwargs)
-            for w in self.worker_group.workers
+            getattr(w, method_name).remote(**kwargs) for w in self.worker_group.workers
         ]
         return ray.get(futures)
+
+    @property
+    def num_workers(self) -> int:
+        return len(self.worker_group.workers)
+
+    @staticmethod
+    def _merge_trajectories(
+        trajs: list[DiffusionTrajectorySpec],
+    ) -> DiffusionTrajectorySpec:
+        """Concatenate per-worker trajectories along the batch dim.
+
+        Prompt-embedding tensors are padded on dim 1 to the max sequence
+        length across workers (each worker pads only to its local batch max);
+        the matching masks zero out the padding.
+        """
+        if len(trajs) == 1:
+            return trajs[0]
+        merged: dict[str, Any] = {}
+        for key, first in trajs[0].items():
+            if not torch.is_tensor(first):
+                merged[key] = [x for t in trajs for x in t[key]]
+                continue
+            parts = [t[key] for t in trajs]
+            if first.ndim >= 2 and len({p.shape[1] for p in parts}) > 1:
+                seq_max = max(p.shape[1] for p in parts)
+                parts = [
+                    torch.nn.functional.pad(
+                        p, (0,) * (2 * (p.ndim - 2)) + (0, seq_max - p.shape[1])
+                    )
+                    for p in parts
+                ]
+            merged[key] = torch.cat(parts, dim=0)
+        return merged  # type: ignore[return-value]
 
     def sample_trajectory(
         self,
@@ -85,15 +125,40 @@ class DiffusionPolicy:
         K: int,
         seed: int | None = None,
     ) -> DiffusionTrajectorySpec:
-        results = self._call_all(
-            "sample_trajectory",
-            prompts=prompts,
-            negative_prompts=negative_prompts,
-            metadata=metadata,
-            K=K,
-            seed=seed,
-        )
-        return results[0]
+        n = self.num_workers
+        if n == 1 or len(prompts) < n or len(prompts) % n != 0:
+            # Uneven splits (e.g. the K=1 validation path with 1 prompt per
+            # batch) run on worker 0 alone.
+            if n > 1:
+                print(
+                    f"[DiffusionPolicy] rollout of {len(prompts)} prompts does "
+                    f"not split across {n} workers; running on worker 0 only",
+                    flush=True,
+                )
+            future = self.worker_group.workers[0].sample_trajectory.remote(
+                prompts=prompts,
+                negative_prompts=negative_prompts,
+                metadata=metadata,
+                K=K,
+                seed=seed,
+            )
+            return ray.get(future)
+        shard = len(prompts) // n
+        futures = []
+        for i, worker in enumerate(self.worker_group.workers):
+            lo, hi = i * shard, (i + 1) * shard
+            futures.append(
+                worker.sample_trajectory.remote(
+                    prompts=prompts[lo:hi],
+                    negative_prompts=negative_prompts[lo:hi],
+                    metadata=metadata[lo:hi],
+                    K=K,
+                    # Distinct per-worker seed so initial latents decorrelate
+                    # across ranks while staying reproducible.
+                    seed=None if seed is None else seed + i * 7919,
+                )
+            )
+        return self._merge_trajectories(ray.get(futures))
 
     def compute_transition_logprob(
         self,
@@ -110,12 +175,36 @@ class DiffusionPolicy:
         data: DiffusionTrainDataSpec,
         loss_cfg: DiffusionLossConfig,
     ) -> dict[str, float]:
-        per_worker = self._call_all("train_step", data=data, loss_cfg=loss_cfg)
+        n = self.num_workers
+        total = int(data["generation_logprobs"].shape[0])
+        if n == 1:
+            per_worker = self._call_all("train_step", data=data, loss_cfg=loss_cfg)
+        else:
+            if total % n != 0:
+                raise ValueError(
+                    f"train batch of {total} samples is not divisible by "
+                    f"{n} DP workers; set grpo.num_prompts_per_step to a "
+                    f"multiple of cluster.gpus_per_node"
+                )
+            # Same contiguous split as the rollout scatter, so each worker
+            # trains on the samples it generated.
+            shard = total // n
+            futures = [
+                w.train_step.remote(
+                    data=data.slice(i * shard, (i + 1) * shard),
+                    loss_cfg=loss_cfg,
+                )
+                for i, w in enumerate(self.worker_group.workers)
+            ]
+            per_worker = ray.get(futures)
         keys = set().union(*(d.keys() for d in per_worker))
         return {
-            k: sum(d.get(k, 0.0) for d in per_worker) / len(per_worker)
-            for k in keys
+            k: sum(d.get(k, 0.0) for d in per_worker) / len(per_worker) for k in keys
         }
+
+    def trainable_checksums(self) -> list[float]:
+        """Per-worker trainable-param checksums; DP ranks must agree."""
+        return self._call_all("report_trainable_checksum")
 
     def prepare_for_generation(self) -> None:
         self._call_all("prepare_for_generation")

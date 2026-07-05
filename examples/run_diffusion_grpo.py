@@ -98,10 +98,20 @@ def main() -> None:
         else None
     )
 
+    n_gpus = int(cluster_cfg["gpus_per_node"]) * int(cluster_cfg["num_nodes"])
+    if n_gpus > 1 and cfg["grpo"]["num_prompts_per_step"] % n_gpus != 0:
+        raise ValueError(
+            f"grpo.num_prompts_per_step={cfg['grpo']['num_prompts_per_step']} "
+            f"must be a multiple of the {n_gpus} DP workers, otherwise every "
+            "rollout silently falls back to a single worker"
+        )
+
     train_loader = DataLoader(
         train_ds,
         batch_size=cfg["grpo"]["num_prompts_per_step"],
         shuffle=True,
+        # A short trailing batch would not split across DP workers.
+        drop_last=True,
         collate_fn=text_to_image_collate_fn,
     )
     val_loader = (

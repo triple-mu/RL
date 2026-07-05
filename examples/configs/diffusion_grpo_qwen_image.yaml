@@ -3,7 +3,7 @@
 # `diffusion_grpo_qwen_image_tiny.yaml`.
 
 grpo:
-  num_prompts_per_step: 4
+  num_prompts_per_step: 8
   num_generations_per_prompt: 16
   max_num_steps: 5000
   val_period: 50
