@@ -1,32 +1,33 @@
-# Diffusion-GRPO production configuration for Qwen-Image flow-grpo.
+# Diffusion-GRPO exemplar for Qwen-Image flow-grpo.
 # Sized for a multi-GPU node; for a single 16GB card use
-# `diffusion_grpo_qwen_image_tiny.yaml`.
+# `diffusion_grpo_qwen_image_tiny.yaml`. Values documented here are the
+# schema defaults (see nemo_rl/models/diffusion/interfaces.py).
 
 grpo:
-  num_prompts_per_step: 8
-  num_generations_per_prompt: 16
+  num_prompts_per_step: 8  # unique prompts per rollout step (the GRPO group count)
+  num_generations_per_prompt: 16  # K images sampled per prompt for the group baseline
   max_num_steps: 5000
-  val_period: 50
+  val_period: 50  # validate every N steps; 0 disables periodic validation
   seed: 42
   use_leave_one_out_baseline: true
 
 loss_fn:
-  ratio_clip_min: 0.2
+  ratio_clip_min: 0.2  # PPO clip lower bound (ratio clipped to [1-min, 1+max])
   ratio_clip_max: 0.2
-  adv_clip_max: 5.0
-  beta: 0.0
+  adv_clip_max: 5.0  # advantages clamped to ±this before the ratio product
+  beta: 0.0  # Gaussian-mean KL coefficient vs the reference policy; 0 disables KL
 
 checkpointing:
   enabled: true
   checkpoint_dir: "results/diffusion_grpo_qwen_image"
-  save_period: 100
+  save_period: 100  # save every N steps; training auto-resumes from the newest step_N
 
 policy:
   model_name: "Qwen/Qwen-Image"
   precision: "bfloat16"
-  train_micro_batch_size: 2
+  train_micro_batch_size: 2  # samples per backward pass (gradient accumulation); null = full batch
   enable_gradient_checkpointing: true
-  seed: 42
+  seed: 42  # required for multi-GPU DP: ranks must init LoRA identically
 
   optimizer:
     lr: 1.0e-5
@@ -36,16 +37,16 @@ policy:
   pipeline:
     height: 512
     width: 512
-    num_inference_steps: 16
-    true_cfg_scale: 4.0
-    max_sequence_length: 256
-    guidance_scale: null
+    num_inference_steps: 16  # denoising steps T per rollout
+    true_cfg_scale: 4.0  # classifier-free guidance scale (1.0 disables CFG)
+    max_sequence_length: 256  # prompt token budget for the text encoder
+    guidance_scale: null  # only for distilled variants with guidance_embeds
 
   algo:
-    noise_level: 0.7
-    sde_type: "sde"
-    sde_window_size: 6
-    sde_window_range: [0, 10]
+    noise_level: 0.7  # SDE noise magnitude inside the active window
+    sde_type: "sde"  # "sde" (Flow-GRPO Gaussian logprob) or "cps" (simplified)
+    sde_window_size: 6  # consecutive denoising steps in the policy gradient; null = all
+    sde_window_range: [0, 10]  # [start, end) envelope the window is sampled from; null = full
 
   lora_cfg:
     enabled: true
@@ -56,6 +57,10 @@ policy:
     exclude_modules: null
 
 data:
+  # Generate these once with:
+  #   uv run python tools/export_diffusion_prompts.py \
+  #     --dataset yuvalkirstain/pickapic_v2_no_images --split train --column caption \
+  #     --train-size 4000 --val-size 64 --out-dir examples/data/diffusion
   train:
     prompt_file: "examples/data/diffusion/train_prompts.jsonl"
   val:
@@ -63,14 +68,18 @@ data:
 
 env:
   image_reward:
+    # PickScore (CLIP-H preference model, ~4GB download on first use) scored on
+    # CPU workers. To score on a GPU instead, reserve one by lowering
+    # cluster.gpus_per_node and set num_gpus_per_worker: 1.0 (see the h200
+    # config). The "dummy" plugin is CPU-only and deterministic — smoke only.
     plugins:
-      - name: "dummy"
+      - name: "pickscore"
         weight: 1.0
     num_cpus_per_worker: 2
     num_gpus_per_worker: 0.0
 
 cluster:
-  gpus_per_node: 8
+  gpus_per_node: 8  # all bundles go to DP policy workers (one model replica each)
   num_nodes: 1
 
 logger:
@@ -80,7 +89,7 @@ logger:
   mlflow_enabled: false
   swanlab_enabled: false
   monitor_gpus: false
-  num_val_samples_to_print: 0
+  num_val_samples_to_print: 0  # also caps how many validation images are saved as PNG
   wandb:
     project: "diffusion-grpo"
     name: "diffusion-grpo-qwen-image"

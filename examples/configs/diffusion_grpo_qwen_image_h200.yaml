@@ -58,10 +58,14 @@ policy:
     exclude_modules: null
 
 data:
+  # Generate these once with:
+  #   uv run python tools/export_diffusion_prompts.py \
+  #     --dataset yuvalkirstain/pickapic_v2_no_images --split train --column caption \
+  #     --train-size 4000 --val-size 64 --out-dir examples/data/diffusion
   train:
-    prompt_file: "/data/datasets/qwen_image_grpo/train_prompts.jsonl"
+    prompt_file: "examples/data/diffusion/train_prompts.jsonl"
   val:
-    prompt_file: "/data/datasets/qwen_image_grpo/val_prompts.jsonl"
+    prompt_file: "examples/data/diffusion/val_prompts.jsonl"
 
 env:
   image_reward:
