@@ -1,10 +1,18 @@
 # Diffusion-GRPO (Qwen-Image, flow-grpo)
 
-Status: experimental, single-node only. The Chinese design document at
+Status: experimental, single-node only (multi-GPU data parallelism within the
+node). The Chinese design document at
 [`design-docs/diffusion-grpo.zh.md`](../design-docs/diffusion-grpo.zh.md) is the
 authoritative description of the algorithm, data contract, and the alignment
 against [`verl-omni`](https://github.com/volcengine/verl-omni)'s
 `flowgrpo_trainer/` recipe.
+
+Configs are validated at startup against
+`nemo_rl.algorithms.diffusion_grpo.DiffusionMasterConfig` (pydantic v2 schema;
+field defaults live on the BaseModel classes in
+`nemo_rl/models/diffusion/interfaces.py`). Training auto-resumes from the
+newest complete `step_N` directory under `checkpointing.checkpoint_dir`; note
+the dataloader position is not restored on resume.
 
 ## What it does
 
@@ -25,6 +33,10 @@ bash tests/functional/diffusion_grpo_smoke.sh
 The smoke driver runs 5 steps against `tiny-random/Qwen-Image` with the
 `DummyImageReward` plugin, configured by
 [`examples/configs/diffusion_grpo_qwen_image_tiny.yaml`](../../examples/configs/diffusion_grpo_qwen_image_tiny.yaml).
+
+The nightly recipe (real `Qwen/Qwen-Image` + PickScore, 8-GPU DP) lives at
+`examples/configs/recipes/diffusion/grpo-qwen-image-1n8g-dp8-lora.yaml` with
+its driver in `tests/test_suites/diffusion/`.
 
 ## Production config
 
@@ -60,9 +72,16 @@ The most-tuned hyperparameters (with verl-omni equivalents in parentheses):
 
 ## Reward plugins
 
-`nemo_rl/environments/image_reward_environment.py` ships a `DummyImageReward`
-plugin (deterministic, CPU-only) used for smoke tests. To register a new
-reward plugin:
+`nemo_rl/environments/image_reward_environment.py` ships three plugins:
+
+- `dummy` — deterministic (prompt hash + image mean), CPU-only; smoke tests.
+- `jpeg_compressibility` — `-jpeg_kb/500`, ported from verl-omni; used by the
+  `_tiny_jpeg*` comparison configs.
+- `pickscore` — the PickScore_v1 CLIP-H preference model (~4GB download on
+  first use; works on both transformers 4.x and 5.x). Used by the h200 config
+  and the nightly recipe.
+
+To register a new reward plugin:
 
 ```python
 from nemo_rl.environments.image_reward_environment import register_image_reward

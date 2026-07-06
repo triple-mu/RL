@@ -15,11 +15,31 @@ action 是 latent transition `x_t → x_{t+1}`，logprob 是 SDE Gaussian 密度
 - Qwen-Image 文生图 GRPO 训练，覆盖 SDE flow-matching rollout、per-timestep logprob、per-prompt group baseline。
 - LoRA 训练为默认，full-parameter 通过配置开启。
 - 可选 reference transformer KL；KL 系数为 0 时不加载 reference。
-- 支持 PickScore / ImageReward 风格的 image reward（首期落地 `DummyImageReward`，其余留接口）。
-- 在单卡 RTX 3080 Ti (16 GB) + `tiny-random/Qwen-Image` 上跑通 smoke。
+- 支持可插拔的 image reward（已落地 `DummyImageReward`、`JpegCompressibilityReward`、`PickScoreReward`；ImageReward / HPS 留接口）。
+- 在单卡 RTX 3080 Ti Laptop (16 GB) + `tiny-random/Qwen-Image` 上跑通 smoke。
 - **不改动** 既有 token GRPO 路径（`grpo.py / lm_policy.py / dtensor_policy_worker.py / environments/interfaces.py`）。
 
 非目标：critic / value model（GRPO 范式不需要）；vLLM/SGLang 生成后端用于 diffusion；image-edit / video（后续 PR）；Megatron-Core 后端的 diffusion 适配（首期仅 dtensor/FSDP2 风格）。
+
+### 实施状态（2026-07-06 更新）
+
+以下几点在落地过程中超出或偏离了首期设计，以代码为准：
+
+- reward 插件实际落地三个：`dummy`、`jpeg_compressibility`（verl-omni 对照实验用）、
+  `pickscore`（完整实现，兼容 transformers 4.x/5.x）；设计中的 `ImageRewardModelReward` 未落地。
+- 配置 schema 采用 pydantic `BaseModel`（config-conventions v2，默认值在字段上），入口以
+  `DiffusionMasterConfig.model_validate` 校验后用 `model_dump()` dict 跨 Ray 边界传输，
+  而非设计时写的 TypedDict + YAML 默认。
+- 已支持最小断点恢复：`DiffusionPolicyWorker.load_checkpoint` + 训练循环自动从
+  `checkpoint_dir` 下最新完整 `step_N` 续跑（dataloader 位置不恢复，留给
+  StatefulDataLoader 后续接入）。
+- §11 承诺的 pytest 版 functional 测试以仓库 test_suites 惯例落地：
+  `examples/configs/recipes/diffusion/grpo-qwen-image-1n8g-dp8-lora.yaml` +
+  `tests/test_suites/diffusion/` driver + `nightly.txt` 条目；单卡 shell smoke 保留在
+  `tests/functional/diffusion_grpo_smoke.sh`。
+- 除 tiny/exemplar 外另有 3 个配置：`_h200`（真实 20B + PickScore 单卡训练）、
+  `_tiny_jpeg` 与 `_tiny_jpeg_persample`（verl-omni matched-reward / matched-loss 对照），
+  以及数据导出工具 `tools/export_diffusion_prompts.py`。
 
 ## 2. 与 token GRPO 的对照
 
@@ -58,7 +78,7 @@ nemo_rl/algorithms/diffusion_grpo.py
   │
   ├── ImageRewardEnvironment
   │      → _RewardWorker pool
-  │         → DummyImageReward / PickScoreReward / ImageRewardModelReward
+  │         → DummyImageReward / JpegCompressibilityReward / PickScoreReward
   │
   ├── GRPO advantage：复用 calculate_baseline_and_std_per_prompt
   ├── DiffusionGRPOLossFn
@@ -88,7 +108,10 @@ LoRA 为默认（rank=4/8/16 等），full-parameter 通过 `policy.dtensor_cfg.
 独立 Ray reward worker pool。输入 `(images, prompts, metadata)`，输出 `(weighted_total_reward, component_metrics)`。首期插件：
 
 - `DummyImageReward`：确定性 reward（prompt 哈希 + image 均值），用于 smoke 与单测；
-- `PickScoreReward` / `ImageRewardModelReward`：仅落骨架与延迟加载守卫，后续 PR 完成。
+- `JpegCompressibilityReward`：`-jpeg_kb/500`，移植自 verl-omni，用于基线对照实验；
+- `PickScoreReward`：完整实现（PickScore_v1 CLIP-H，走整模型 forward 取
+  `logits_per_image` 以同时兼容 transformers 4.x/5.x），重型加载延迟到 Ray actor 内；
+- `ImageRewardModelReward` / HPS：未落地，通过 `register_image_reward` 接口留给后续 PR。
 
 ### Critic
 
@@ -171,8 +194,9 @@ loss / metrics
 
 ### `nemo_rl/models/diffusion/interfaces.py`
 
-已存在；本期追加 `DiffusionPolicyConfig`、`DiffusionGRPOAlgoConfig`、`DiffusionLossConfig` 三个
-`TypedDict`（遵循 `config-conventions` 技能：YAML 是默认源，不在 Python 写 defaults）。
+已存在；本期追加 `DiffusionPolicyConfig`、`DiffusionGRPOAlgoConfig`、`DiffusionLossConfig` 等
+配置类，采用 pydantic `BaseModel(extra="allow")`（config-conventions v2：默认值集中在
+BaseModel 字段上，exemplar YAML 作为文档；入口校验后以 `model_dump()` dict 跨 Ray 传输）。
 
 ### `nemo_rl/models/diffusion/sde.py`
 
@@ -370,7 +394,7 @@ metadata)` 假设 token-style 输入，与 image reward 不兼容。
 5. backward + 梯度累积。
 6. clip grad norm → optimizer step。
 
-## 9. 单卡 smoke 规格（3080 Ti 16 GB）
+## 9. 单卡 smoke 规格（3080 Ti Laptop 16 GB）
 
 | 项目 | 值 |
 |---|---|
@@ -422,10 +446,12 @@ verl-omni 在 `examples/flowgrpo_trainer/`、`verl_omni/trainer/diffusion/`、
 
 ### 单元测试
 
-- `tests/unit/models/diffusion/test_sde.py`（已有 scaffold）：
-  - `test_sde_recompute_matches_sampling_fp32`：sample 一次后用 `prev_sample` recompute；
-    `max|Δlogprob| < 1e-5`。
-  - `test_sde_window_mask`：`compute_window_mask` 形状与边界正确。
+- `tests/unit/models/diffusion/test_sde.py`：
+  - `test_sde_step_recomputes_logprob_from_prev_sample`（含 `cps` 变体）：sample 一次后用
+    `prev_sample` recompute，logprob 精确一致；
+  - `compute_window_mask` 的 full/partial/末端 clamp/非法参数用例；
+  - `test_flow_match_scheduler_contract`：真实 diffusers `FlowMatchEulerDiscreteScheduler`
+    满足 `timesteps/sigmas/index_for_timestep` 契约（防 diffusers API 漂移）。
 - `tests/unit/algorithms/loss/test_diffusion_grpo_loss.py`：
   - 零 advantage → 零 policy_loss；
   - clipped 分支按公式触发；
@@ -439,11 +465,16 @@ verl-omni 在 `examples/flowgrpo_trainer/`、`verl_omni/trainer/diffusion/`、
 
 ### 集成测试
 
-- `tests/functional/diffusion/test_diffusion_grpo_smoke.py`：5 步训练，断言 loss 有限、LoRA
-  state_dict 在 checkpoint 中非全零、reward_mean 在合理区间。`@pytest.mark.nightly` 与
-  `@pytest.mark.timeout(900)`（遵循 `testing` 技能）。
-- `tests/functional/diffusion/test_logprob_parity.py`：单 worker 内 sample → recompute parity（fp32
-  < 1e-4、bf16 < 1e-2）。
+按仓库 test_suites 惯例落地（替代早期设想的 pytest functional 文件）：
+
+- nightly 三件套：`examples/configs/recipes/diffusion/grpo-qwen-image-1n8g-dp8-lora.yaml`
+  + `tests/test_suites/diffusion/grpo-qwen-image-1n8g-dp8-lora.sh`
+  + `tests/test_suites/nightly.txt` 条目（真实 Qwen-Image + PickScore，50 步，
+  断言 mean_ratio ≈ 1 且末步 loss 有界）。
+- 单卡 shell smoke：`tests/functional/diffusion_grpo_smoke.sh`（tiny 模型 5 步 +
+  checkpoint 产物断言，手动或 auto-research 驱动）。
+- sample → recompute 的 logprob parity（fp32 < 1e-4、bf16 < 1e-2）由单测
+  `test_qwen_image_pipeline_adapter.py` 覆盖，无需单独 functional。
 
 ## 12. 风险与缓解
 
@@ -487,7 +518,8 @@ S6 起强串行。每 commit 控制 < 500 LOC，方便 review。所有 commit �
 - 不改既有 token GRPO 路径（`grpo.py / lm_policy.py / dtensor_policy_worker.py /
   environments/interfaces.py`）。
 - 不在 diffusion 路径上接入 vLLM / SGLang / Megatron。
-- 不实现 PickScore / ImageReward 的完整加载（仅留 skeleton + 配置开关）。
+- 不实现 ImageReward / HPS 的加载（PickScore 已完整落地，其余走
+  `register_image_reward` 插件接口）。
 - 不做 image-edit / video / 多 reward async 流水（后续 PR）。
 - 不做 Megatron-Core 后端的 diffusion 适配（首期仅 dtensor / FSDP2 风格）。
 

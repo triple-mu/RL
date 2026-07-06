@@ -201,3 +201,30 @@ def test_sde_step_rejects_unknown_sde_type():
             noise_level=0.7,
             sde_type="unknown",
         )
+
+
+def test_flow_match_scheduler_contract():
+    """Guard the informal scheduler contract against diffusers API drift.
+
+    `sde_step_with_logprob` and the worker's `_load_pipeline` assume the real
+    `FlowMatchEulerDiscreteScheduler` exposes `timesteps` (1-D), `sigmas`
+    (1-D with a terminal sentinel entry) and `index_for_timestep(t) -> int`.
+    """
+    import numpy as np
+    from diffusers import FlowMatchEulerDiscreteScheduler
+
+    T = 8
+    scheduler = FlowMatchEulerDiscreteScheduler(use_dynamic_shifting=True)
+    sigmas = np.linspace(1.0, 1 / T, T)
+    # Same call shape as DiffusionPolicyWorker._load_pipeline.
+    scheduler.set_timesteps(T, device="cpu", sigmas=sigmas.tolist(), mu=0.8)
+
+    assert scheduler.timesteps.ndim == 1
+    assert len(scheduler.timesteps) == T
+    # One trailing sentinel sigma so sigmas[idx + 1] is valid for every step.
+    assert scheduler.sigmas.ndim == 1
+    assert len(scheduler.sigmas) == T + 1
+    assert float(scheduler.sigmas[-1]) == 0.0
+
+    for i, t in enumerate(scheduler.timesteps):
+        assert scheduler.index_for_timestep(t) == i
