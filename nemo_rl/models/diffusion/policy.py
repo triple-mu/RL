@@ -36,11 +36,10 @@ from typing import Any
 import ray
 import torch
 
+from nemo_rl.distributed.batched_data_dict import BatchedDataDict
 from nemo_rl.distributed.virtual_cluster import RayVirtualCluster
 from nemo_rl.distributed.worker_groups import RayWorkerBuilder, RayWorkerGroup
 from nemo_rl.models.diffusion.interfaces import (
-    DiffusionLossConfig,
-    DiffusionPolicyConfig,
     DiffusionTrainDataSpec,
     DiffusionTrajectorySpec,
 )
@@ -52,7 +51,8 @@ class DiffusionPolicy:
     def __init__(
         self,
         cluster: RayVirtualCluster,
-        config: DiffusionPolicyConfig,
+        # model_dump() dict view of DiffusionPolicyConfig.
+        config: dict[str, Any],
         *,
         name_prefix: str = "diffusion_policy",
     ) -> None:
@@ -99,12 +99,13 @@ class DiffusionPolicy:
         """
         if len(trajs) == 1:
             return trajs[0]
+        trajs_d: list[dict[str, Any]] = [dict(t) for t in trajs]
         merged: dict[str, Any] = {}
-        for key, first in trajs[0].items():
+        for key, first in trajs_d[0].items():
             if not torch.is_tensor(first):
-                merged[key] = [x for t in trajs for x in t[key]]
+                merged[key] = [x for t in trajs_d for x in t[key]]
                 continue
-            parts = [t[key] for t in trajs]
+            parts = [t[key] for t in trajs_d]
             if first.ndim >= 2 and len({p.shape[1] for p in parts}) > 1:
                 seq_max = max(p.shape[1] for p in parts)
                 parts = [
@@ -172,8 +173,9 @@ class DiffusionPolicy:
 
     def train(
         self,
-        data: DiffusionTrainDataSpec,
-        loss_cfg: DiffusionLossConfig,
+        data: BatchedDataDict[DiffusionTrainDataSpec],
+        # model_dump() dict view of DiffusionLossConfig.
+        loss_cfg: dict[str, Any],
     ) -> dict[str, float]:
         n = self.num_workers
         total = int(data["generation_logprobs"].shape[0])

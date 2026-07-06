@@ -11,7 +11,6 @@ grpo:
   max_val_samples: 16
   seed: 42
   use_leave_one_out_baseline: true
-  normalize_rewards: true
 
 loss_fn:
   ratio_clip_min: 0.2
@@ -27,7 +26,6 @@ checkpointing:
 policy:
   model_name: "Qwen/Qwen-Image"
   precision: "bfloat16"
-  train_global_batch_size: 16
   train_micro_batch_size: 8
   enable_gradient_checkpointing: true
   seed: 42
@@ -81,8 +79,13 @@ logger:
   log_dir: "logs/diffusion_grpo_qwen_image_h200"
   wandb_enabled: false
   tensorboard_enabled: true
-  tensorboard: {}
   mlflow_enabled: false
   swanlab_enabled: false
   monitor_gpus: false
   num_val_samples_to_print: 8
+  wandb:
+    project: "diffusion-grpo"
+    name: "diffusion-grpo-qwen-image-h200"
+  gpu_monitoring:
+    collection_interval: 10  # seconds between GPU usage samples
+    flush_interval: 10  # seconds between flushes to the loggers

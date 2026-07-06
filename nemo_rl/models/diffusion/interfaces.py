@@ -11,90 +11,109 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from typing import Any, NotRequired, Protocol, TypedDict
+from typing import Any, Callable, NotRequired, Protocol, TypedDict
 
 import torch
+from pydantic import BaseModel, Field
 
 
-class DiffusionPipelineCfg(TypedDict):
+class DiffusionPipelineCfg(BaseModel, extra="allow"):
     """Per-rollout pipeline knobs aligned with verl-omni `DiffusionPipelineConfig`."""
 
-    height: int
-    width: int
-    num_inference_steps: int
-    true_cfg_scale: float
-    max_sequence_length: int
-    guidance_scale: NotRequired[float | None]
+    height: int = 512
+    width: int = 512
+    num_inference_steps: int = 16
+    true_cfg_scale: float = 4.0
+    max_sequence_length: int = 256
+    guidance_scale: float | None = None
 
 
-class DiffusionAlgoCfg(TypedDict):
+class DiffusionAlgoCfg(BaseModel, extra="allow"):
     """SDE rollout algorithm knobs aligned with verl-omni `DiffusionRolloutAlgoConfig`."""
 
-    noise_level: float
-    sde_type: str
-    sde_window_size: NotRequired[int | None]
-    sde_window_range: NotRequired[list[int] | None]
+    noise_level: float = 0.7
+    sde_type: str = "sde"
+    # None lets every denoising step participate in the SDE window.
+    sde_window_size: int | None = None
+    # [start, end) envelope the active window is sampled from; None = full range.
+    sde_window_range: list[int] | None = None
 
 
-class DiffusionLoraCfg(TypedDict):
+class DiffusionLoraCfg(BaseModel, extra="allow"):
     """LoRA adapter configuration."""
 
-    enabled: bool
-    rank: int
-    alpha: int
-    target_modules: list[str]
-    dropout: NotRequired[float]
-    exclude_modules: NotRequired[list[str] | None]
+    enabled: bool = True
+    rank: int = 32
+    alpha: int = 64
+    target_modules: list[str] = Field(
+        default_factory=lambda: ["to_q", "to_k", "to_v", "to_out.0"]
+    )
+    dropout: float = 0.0
+    exclude_modules: list[str] | None = None
 
 
-class DiffusionPolicyConfig(TypedDict):
+class DiffusionOptimizerCfg(BaseModel, extra="allow"):
+    """AdamW hyperparameters for the diffusion policy."""
+
+    lr: float = 1.0e-5
+    weight_decay: float = 0.0
+    betas: tuple[float, float] = (0.9, 0.999)
+
+
+class DiffusionPolicyConfig(BaseModel, extra="allow"):
     """Top-level configuration for the diffusion policy/worker.
 
-    Fields mirror `examples/configs/diffusion_grpo_qwen_image*.yaml`. Defaults live
-    in YAML per `config-conventions`; this TypedDict only declares types.
+    Defaults live on the fields (config-conventions v2); the exemplar YAMLs
+    under `examples/configs/diffusion_grpo_qwen_image*.yaml` document them.
+    The config crosses the Ray boundary as a `model_dump()` dict, so workers
+    read it with key access.
     """
 
     model_name: str
-    precision: str
-    train_global_batch_size: int
-    train_micro_batch_size: int
-    enable_gradient_checkpointing: bool
-    optimizer: dict[str, Any]
-    pipeline: DiffusionPipelineCfg
-    algo: DiffusionAlgoCfg
-    lora_cfg: DiffusionLoraCfg
-    reference_transformer_enabled: NotRequired[bool]
-    seed: NotRequired[int]
+    precision: str = "bfloat16"
+    # None trains the whole rollout batch in a single backward pass.
+    train_micro_batch_size: int | None = None
+    enable_gradient_checkpointing: bool = True
+    # Keep per-(latent-element) logprobs instead of reducing per step; pairs
+    # with loss_fn.aggregate_logprobs_per_sample (verl-omni parity).
+    per_element_logprob: bool = False
+    # Required for multi-worker DP: all ranks must seed LoRA init identically.
+    seed: int | None = None
+    optimizer: DiffusionOptimizerCfg = Field(default_factory=DiffusionOptimizerCfg)
+    pipeline: DiffusionPipelineCfg = Field(default_factory=DiffusionPipelineCfg)
+    algo: DiffusionAlgoCfg = Field(default_factory=DiffusionAlgoCfg)
+    lora_cfg: DiffusionLoraCfg = Field(default_factory=DiffusionLoraCfg)
 
 
-class DiffusionGRPOAlgoConfig(TypedDict):
+class DiffusionGRPOAlgoConfig(BaseModel, extra="allow"):
     """Top-level diffusion-GRPO training-loop config."""
 
-    num_prompts_per_step: int
-    num_generations_per_prompt: int
-    max_num_steps: int
-    val_period: int
-    seed: int
-    ppo_epochs: NotRequired[int]
-    val_at_start: NotRequired[bool]
-    val_at_end: NotRequired[bool]
-    max_val_samples: NotRequired[int]
-    use_leave_one_out_baseline: NotRequired[bool]
-    normalize_rewards: NotRequired[bool]
+    num_prompts_per_step: int = 8
+    num_generations_per_prompt: int = 16
+    max_num_steps: int = 5000
+    # 0 disables periodic validation.
+    val_period: int = 50
+    seed: int = 42
+    ppo_epochs: int = 1
+    val_at_start: bool = False
+    val_at_end: bool = False
+    # 0 validates on the full val dataloader.
+    max_val_samples: int = 0
+    use_leave_one_out_baseline: bool = True
 
 
-class DiffusionLossConfig(TypedDict):
+class DiffusionLossConfig(BaseModel, extra="allow"):
     """Diffusion-GRPO loss knobs aligned with verl-omni `FlowGRPOLoss` config."""
 
-    ratio_clip_min: float
-    ratio_clip_max: float
-    adv_clip_max: float
-    beta: float
+    ratio_clip_min: float = 0.2
+    ratio_clip_max: float = 0.2
+    adv_clip_max: float = 5.0
+    beta: float = 0.0
     # If True, sum logprobs over the T dimension before computing the ratio,
     # so the loss is `mean_B(-adv_B * ratio_B)`. This matches verl-omni's
     # 1-D-per-sample formulation. Default False uses per-(B, T) elements
     # (Flow-GRPO paper formulation).
-    aggregate_logprobs_per_sample: NotRequired[bool]
+    aggregate_logprobs_per_sample: bool = False
 
 
 class DiffusionDatumSpec(TypedDict):
@@ -146,10 +165,17 @@ class DiffusionPipelineAdapter(Protocol):
         prompts: list[str],
         negative_prompts: list[str],
         metadata: list[dict[str, Any]],
+        *,
+        K: int,
+        seed: int | None = None,
     ) -> DiffusionTrajectorySpec: ...
 
     def compute_transition_logprob(
-        self, data: DiffusionTrainDataSpec
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]: ...
+        self,
+        data: DiffusionTrainDataSpec,
+        *,
+        use_reference: bool = False,
+        reference_forward_fn: Callable[..., torch.Tensor] | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor | None]: ...
 
     def decode(self, latents: torch.Tensor) -> torch.Tensor: ...

@@ -20,7 +20,10 @@ import pprint
 from omegaconf import OmegaConf
 from torch.utils.data import DataLoader
 
-from nemo_rl.algorithms.diffusion_grpo import diffusion_grpo_train
+from nemo_rl.algorithms.diffusion_grpo import (
+    DiffusionMasterConfig,
+    diffusion_grpo_train,
+)
 from nemo_rl.algorithms.utils import set_seed
 from nemo_rl.data.datasets.text_to_image_prompt import (
     TextToImagePromptDataset,
@@ -65,50 +68,49 @@ def main() -> None:
     print("Final config:")
     pprint.pprint(cfg)
 
-    cfg["logger"]["log_dir"] = get_next_experiment_dir(cfg["logger"]["log_dir"])
-    print(f"📊 log_dir: {cfg['logger']['log_dir']}")
+    # Validate against the schema; field defaults live on the BaseModels
+    # (config-conventions v2), so downstream code reads values directly.
+    master = DiffusionMasterConfig.model_validate(cfg)
+
+    master.logger["log_dir"] = get_next_experiment_dir(master.logger["log_dir"])
+    print(f"📊 log_dir: {master.logger['log_dir']}")
 
     # Seed the driver process too: DataLoader(shuffle=True) draws from the
     # global RNG, so without this the prompt order differs across runs.
-    set_seed(int(cfg["grpo"].get("seed", 42)))
+    set_seed(master.grpo.seed)
 
     init_ray()
 
-    cluster_cfg = cfg["cluster"]
     cluster = RayVirtualCluster(
-        bundle_ct_per_node_list=[cluster_cfg["gpus_per_node"]]
-        * cluster_cfg["num_nodes"],
+        bundle_ct_per_node_list=[master.cluster["gpus_per_node"]]
+        * master.cluster["num_nodes"],
         use_gpus=True,
         max_colocated_worker_groups=1,
     )
 
-    policy = DiffusionPolicy(cluster=cluster, config=cfg["policy"])
+    # The policy config crosses the Ray boundary into workers as a dict.
+    policy = DiffusionPolicy(cluster=cluster, config=master.policy.model_dump())
 
-    env_cfg = cfg["env"]["image_reward"]
-    env = ImageRewardEnvironment(
-        plugin_specs=env_cfg["plugins"],
-        num_cpus_per_worker=env_cfg.get("num_cpus_per_worker", 1),
-        num_gpus_per_worker=env_cfg.get("num_gpus_per_worker", 0.0),
-    )
+    env = ImageRewardEnvironment(master.env.image_reward)
 
-    train_ds = TextToImagePromptDataset(cfg["data"]["train"]["prompt_file"])
+    train_ds = TextToImagePromptDataset(master.data.train.prompt_file)
     val_ds = (
-        TextToImagePromptDataset(cfg["data"]["val"]["prompt_file"])
-        if "val" in cfg["data"]
+        TextToImagePromptDataset(master.data.val.prompt_file)
+        if master.data.val is not None
         else None
     )
 
-    n_gpus = int(cluster_cfg["gpus_per_node"]) * int(cluster_cfg["num_nodes"])
-    if n_gpus > 1 and cfg["grpo"]["num_prompts_per_step"] % n_gpus != 0:
+    n_gpus = int(master.cluster["gpus_per_node"]) * int(master.cluster["num_nodes"])
+    if n_gpus > 1 and master.grpo.num_prompts_per_step % n_gpus != 0:
         raise ValueError(
-            f"grpo.num_prompts_per_step={cfg['grpo']['num_prompts_per_step']} "
+            f"grpo.num_prompts_per_step={master.grpo.num_prompts_per_step} "
             f"must be a multiple of the {n_gpus} DP workers, otherwise every "
             "rollout silently falls back to a single worker"
         )
 
     train_loader = DataLoader(
         train_ds,
-        batch_size=cfg["grpo"]["num_prompts_per_step"],
+        batch_size=master.grpo.num_prompts_per_step,
         shuffle=True,
         # A short trailing batch would not split across DP workers.
         drop_last=True,
@@ -117,7 +119,7 @@ def main() -> None:
     val_loader = (
         DataLoader(
             val_ds,
-            batch_size=cfg["grpo"]["num_prompts_per_step"],
+            batch_size=master.grpo.num_prompts_per_step,
             shuffle=False,
             collate_fn=text_to_image_collate_fn,
         )
@@ -125,7 +127,10 @@ def main() -> None:
         else None
     )
 
-    logger = Logger(cfg["logger"])
+    logger = Logger(master.logger)
+
+    # NotRequired in LoggerConfig: absent means "save no validation images".
+    num_val_images = master.logger.get("num_val_samples_to_print")
 
     try:
         diffusion_grpo_train(
@@ -133,18 +138,18 @@ def main() -> None:
             env=env,
             train_dataloader=train_loader,
             val_dataloader=val_loader,
-            algo_cfg=cfg["grpo"],
-            loss_cfg=cfg["loss_fn"],
-            policy_cfg=cfg["policy"],
+            algo_cfg=master.grpo,
+            loss_cfg=master.loss_fn,
+            policy_cfg=master.policy,
             logger=logger,
-            checkpoint_dir=cfg["checkpointing"].get("checkpoint_dir")
-            if cfg["checkpointing"].get("enabled")
+            checkpoint_dir=master.checkpointing.checkpoint_dir
+            if master.checkpointing.enabled
             else None,
-            save_period=int(cfg["checkpointing"].get("save_period", 0)),
-            val_image_dir=os.path.join(cfg["logger"]["log_dir"], "val_images"),
-            num_val_images_to_save=int(
-                cfg["logger"].get("num_val_samples_to_print", 0)
-            ),
+            save_period=master.checkpointing.save_period,
+            val_image_dir=os.path.join(master.logger["log_dir"], "val_images"),
+            num_val_images_to_save=int(num_val_images)
+            if num_val_images is not None
+            else 0,
         )
     finally:
         env.shutdown()

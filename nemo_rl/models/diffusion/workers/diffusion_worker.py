@@ -34,19 +34,32 @@ duplicate model copy.
 from __future__ import annotations
 
 import os
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import ray
-
-if TYPE_CHECKING:  # pragma: no cover
-    from nemo_rl.models.diffusion.interfaces import (
-        DiffusionPolicyConfig,
-    )
 
 
 @ray.remote
 class DiffusionPolicyWorker:  # pragma: no cover
     """Ray actor owning one Qwen-Image pipeline + LoRA optimizer."""
+
+    # Populated by the _load_pipeline/_maybe_apply_lora/_build_optimizer/
+    # _build_adapter helpers invoked from __init__ (torch/diffusers/peft types
+    # stay `Any` because those imports are deferred into method bodies).
+    device: Any
+    _pipe: Any
+    transformer: Any
+    text_encoder: Any
+    tokenizer: Any
+    vae: Any
+    scheduler: Any
+    _vae_scale_factor: int
+    _num_channels_latents: int
+    _lora_enabled: bool
+    optimizer: Any
+    _img_shapes: list[tuple[int, int, int]]
+    adapter: Any
+    _loss_fn: Any
 
     @staticmethod
     def configure_worker(
@@ -62,7 +75,8 @@ class DiffusionPolicyWorker:  # pragma: no cover
 
     def __init__(
         self,
-        config: "DiffusionPolicyConfig",
+        # model_dump() dict view of DiffusionPolicyConfig.
+        config: dict[str, Any],
         *,
         rank: int = 0,
         world_size: int = 1,
@@ -79,7 +93,7 @@ class DiffusionPolicyWorker:  # pragma: no cover
         self.rank = int(os.environ.get("RANK", rank))
         self.world_size = int(os.environ.get("WORLD_SIZE", world_size))
 
-        if "seed" in config:
+        if config.get("seed") is not None:
             set_seed(int(config["seed"]))
         elif self.world_size > 1:
             # DP correctness relies on every rank materializing bit-identical
@@ -189,7 +203,8 @@ class DiffusionPolicyWorker:  # pragma: no cover
             r=lora_cfg["rank"],
             lora_alpha=lora_cfg["alpha"],
             target_modules=lora_cfg["target_modules"],
-            lora_dropout=lora_cfg.get("dropout", 0.0),
+            lora_dropout=lora_cfg["dropout"],
+            exclude_modules=lora_cfg["exclude_modules"],
         )
         self.transformer = get_peft_model(self.transformer, peft_config)
         self._lora_enabled = True
@@ -203,8 +218,8 @@ class DiffusionPolicyWorker:  # pragma: no cover
         self.optimizer = torch.optim.AdamW(
             trainable,
             lr=opt_cfg["lr"],
-            weight_decay=opt_cfg.get("weight_decay", 0.0),
-            betas=tuple(opt_cfg.get("betas", (0.9, 0.999))),
+            weight_decay=opt_cfg["weight_decay"],
+            betas=tuple(opt_cfg["betas"]),
         )
 
     def _build_adapter(self) -> None:
@@ -229,7 +244,7 @@ class DiffusionPolicyWorker:  # pragma: no cover
             device=self.device,
             dtype=self.dtype,
             forward_transformer_fn=self._forward_transformer_with_img_shapes,
-            per_element_logprob=bool(self.config.get("per_element_logprob", False)),
+            per_element_logprob=bool(self.config["per_element_logprob"]),
         )
 
     def _forward_transformer_with_img_shapes(self, transformer, **kwargs):
@@ -243,7 +258,7 @@ class DiffusionPolicyWorker:  # pragma: no cover
         timestep = timestep.to(dtype=hs.dtype).expand(hs.shape[0])
         guidance = None
         if getattr(transformer.config, "guidance_embeds", False):
-            gscale = self.config["pipeline"].get("guidance_scale", None)
+            gscale = self.config["pipeline"]["guidance_scale"]
             if gscale is None:
                 raise ValueError(
                     "transformer.config.guidance_embeds is True but pipeline.guidance_scale is None"
@@ -416,7 +431,8 @@ class DiffusionPolicyWorker:  # pragma: no cover
         # at a time. Chunk losses are weighted by sample count, which matches
         # the full-batch masked_mean when masks are uniform across samples.
         total = int(data["generation_logprobs"].shape[0])
-        micro = int(self.config.get("train_micro_batch_size") or 0) or total
+        # None → the whole rollout batch in one backward pass.
+        micro = self.config["train_micro_batch_size"] or total
         self.optimizer.zero_grad(set_to_none=True)
         loss_acc = 0.0
         metrics_acc: dict[str, float] = {}

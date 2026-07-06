@@ -96,10 +96,10 @@ def sde_step_with_logprob(
             torch.sqrt(sigma / (1 - torch.where(sigma == 1, sigma_max, sigma)))
             * noise_level
         )
-        prev_sample_mean = sample * (1 + std_dev_t**2 / (2 * sigma) * dt)
+        prev_sample_mean = sample * (1 + std_dev_t.square() / (2 * sigma) * dt)
         prev_sample_mean = (
             prev_sample_mean
-            + model_output * (1 + std_dev_t**2 * (1 - sigma) / (2 * sigma)) * dt
+            + model_output * (1 + std_dev_t.square() * (1 - sigma) / (2 * sigma)) * dt
         )
         sqrt_negative_dt = torch.sqrt(-dt)
         if prev_sample is None:
@@ -115,7 +115,7 @@ def sde_step_with_logprob(
 
         std = std_dev_t * sqrt_negative_dt
         log_prob = (
-            -((prev_sample.detach() - prev_sample_mean) ** 2) / (2 * std**2)
+            -(prev_sample.detach() - prev_sample_mean).square() / (2 * std.square())
             - torch.log(std)
             - math.log(math.sqrt(2 * math.pi))
         )
@@ -125,7 +125,7 @@ def sde_step_with_logprob(
         noise_estimate = sample + model_output * (1 - sigma)
         prev_sample_mean = pred_original_sample * (1 - sigma_prev)
         prev_sample_mean = prev_sample_mean + noise_estimate * torch.sqrt(
-            sigma_prev**2 - std_dev_t**2
+            sigma_prev.square() - std_dev_t.square()
         )
         if prev_sample is None:
             variance_noise = torch.randn(
@@ -136,7 +136,7 @@ def sde_step_with_logprob(
             )
             prev_sample = prev_sample_mean + std_dev_t * variance_noise
 
-        log_prob = -((prev_sample.detach() - prev_sample_mean) ** 2)
+        log_prob = -(prev_sample.detach() - prev_sample_mean).square()
     else:
         raise ValueError(f"Unsupported SDE type: {sde_type}")
 

@@ -43,11 +43,11 @@ def test_dummy_image_reward_rejects_size_mismatch():
 # pragma: no cover # multi-actor Ray test
 def test_image_reward_environment_aggregates_weighted_components(ray_init_and_shutdown):  # noqa: F811
     env = ImageRewardEnvironment(
-        plugin_specs=[
-            {"name": "dummy", "weight": 0.25},
-        ],
-        num_cpus_per_worker=1,
-        num_gpus_per_worker=0.0,
+        {
+            "plugins": [{"name": "dummy", "weight": 0.25}],
+            "num_cpus_per_worker": 1,
+            "num_gpus_per_worker": 0.0,
+        }
     )
     images = torch.zeros(3, 3, 4, 4)
     prompts = ["a", "b", "c"]
@@ -73,10 +73,13 @@ def test_image_reward_environment_two_plugins_sum(ray_init_and_shutdown):  # noq
     register_image_reward("half", _half)
     try:
         env = ImageRewardEnvironment(
-            plugin_specs=[
-                {"name": "dummy", "weight": 1.0},
-                {"name": "half", "weight": 2.0},
-            ]
+            {
+                "plugins": [
+                    {"name": "dummy", "weight": 1.0},
+                    {"name": "half", "weight": 2.0},
+                ],
+                "num_cpus_per_worker": 1,
+            }
         )
         total, metrics = env.score_images(
             torch.zeros(2, 3, 2, 2),

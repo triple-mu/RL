@@ -34,10 +34,8 @@ from typing import Any, Callable
 import torch
 
 from nemo_rl.models.diffusion.interfaces import (
-    DiffusionAlgoCfg,
-    DiffusionPipelineCfg,
-    DiffusionTrajectorySpec,
     DiffusionTrainDataSpec,
+    DiffusionTrajectorySpec,
 )
 from nemo_rl.models.diffusion.sde import (
     compute_window_mask,
@@ -78,8 +76,10 @@ class QwenImagePipelineAdapter:
         *,
         transformer: torch.nn.Module,
         scheduler: Any,
-        pipeline_cfg: DiffusionPipelineCfg,
-        algo_cfg: DiffusionAlgoCfg,
+        # Dict views of DiffusionPipelineCfg / DiffusionAlgoCfg (the config
+        # crosses the Ray boundary as model_dump() dicts).
+        pipeline_cfg: dict[str, Any],
+        algo_cfg: dict[str, Any],
         encode_condition_fn: Callable[[list[str], list[str]], dict[str, torch.Tensor]]
         | None = None,
         decode_fn: Callable[[torch.Tensor], torch.Tensor] | None = None,
@@ -102,6 +102,7 @@ class QwenImagePipelineAdapter:
         self._prepare_initial_latents_fn = prepare_initial_latents_fn
         self.latent_channels = latent_channels
         self.vae_scale_factor = vae_scale_factor
+        # pyrefly: ignore  # read-only
         self.device = device or (
             torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
         )
@@ -219,11 +220,12 @@ class QwenImagePipelineAdapter:
         *,
         use_reference: bool = False,
         reference_forward_fn: Callable[..., torch.Tensor] | None = None,
-    ) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor | None]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor | None]:
         latents = data["latents"]  # [B, T+1, ...]
-        timesteps = data[
-            "timesteps"
-        ]  # [B, T] in {0..T-1} indexing into scheduler.timesteps
+        # [B, T] raw scheduler timestep values (e.g. 1000.0, 980.0, ...) as
+        # stored by sample_trajectory; sde_step_with_logprob maps them back to
+        # sigma indices via scheduler.index_for_timestep.
+        timesteps = data["timesteps"]
         prompt_embeds = data["prompt_embeds"]
         prompt_embeds_mask = data["prompt_embeds_mask"]
         negative_prompt_embeds = data["negative_prompt_embeds"]
@@ -280,7 +282,7 @@ class QwenImagePipelineAdapter:
         means = torch.stack(current_means, dim=1)
         stds = torch.stack(std_devs, dim=1)
         refs = torch.stack(reference_means, dim=1) if reference_means else None
-        return curr, means, stds, refs  # type: ignore[return-value]
+        return curr, means, stds, refs
 
     # ------------------------------------------------------------------
     # Internals shared by sampling and recompute

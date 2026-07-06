@@ -32,6 +32,22 @@ from typing import Any, Callable, Protocol
 
 import ray
 import torch
+from pydantic import BaseModel
+
+
+class ImageRewardPluginSpec(BaseModel, extra="allow"):
+    """One entry of the `env.image_reward.plugins` YAML list."""
+
+    name: str
+    weight: float = 1.0
+
+
+class ImageRewardEnvConfig(BaseModel, extra="allow"):
+    """Schema for the `env.image_reward` YAML block."""
+
+    plugins: list[ImageRewardPluginSpec]
+    num_cpus_per_worker: int = 2
+    num_gpus_per_worker: float = 0.0
 
 
 class BaseImageReward(Protocol):
@@ -228,30 +244,26 @@ class ImageRewardEnvironment:
     Components are summed; per-component means are emitted as metrics.
     """
 
-    def __init__(
-        self,
-        plugin_specs: list[dict[str, Any]],
-        *,
-        num_cpus_per_worker: int = 1,
-        num_gpus_per_worker: float = 0.0,
-    ) -> None:
+    def __init__(self, config: ImageRewardEnvConfig | dict[str, Any]) -> None:
+        # Normalize through the schema so plugin weights and worker resources
+        # take their defaults from ImageRewardEnvConfig, not call sites.
+        cfg = ImageRewardEnvConfig.model_validate(config)
         self._workers: list[ray.actor.ActorHandle] = []
         self._weights: list[float] = []
         self._names: list[str] = []
-        for spec in plugin_specs:
-            name = spec["name"]
-            if name not in _PLUGIN_REGISTRY:
+        for spec in cfg.plugins:
+            if spec.name not in _PLUGIN_REGISTRY:
                 raise KeyError(
-                    f"Unknown image reward plugin {name!r}; "
+                    f"Unknown image reward plugin {spec.name!r}; "
                     f"registered={list(_PLUGIN_REGISTRY)}"
                 )
-            factory = _PLUGIN_REGISTRY[name]
+            factory = _PLUGIN_REGISTRY[spec.name]
             actor = _RewardWorker.options(
-                num_cpus=num_cpus_per_worker, num_gpus=num_gpus_per_worker
+                num_cpus=cfg.num_cpus_per_worker, num_gpus=cfg.num_gpus_per_worker
             ).remote(factory)
             self._workers.append(actor)
-            self._names.append(name)
-            self._weights.append(float(spec.get("weight", 1.0)))
+            self._names.append(spec.name)
+            self._weights.append(spec.weight)
 
     def score_images(
         self,

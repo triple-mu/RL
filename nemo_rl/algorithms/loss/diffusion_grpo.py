@@ -48,8 +48,10 @@ class DiffusionGRPOLossFn:
     computation, to match verl-omni's FlowGRPOLoss behaviour.
     """
 
-    def __init__(self, cfg: DiffusionLossConfig):
-        self.cfg = cfg
+    def __init__(self, cfg: DiffusionLossConfig | dict[str, Any]):
+        # Normalize through the schema so both validated dicts (from the
+        # entrypoint's model_dump) and partial dicts get schema defaults.
+        self.cfg = DiffusionLossConfig.model_validate(cfg).model_dump()
 
     def __call__(
         self,
@@ -69,9 +71,7 @@ class DiffusionGRPOLossFn:
         beta: float = self.cfg["beta"]
 
         device = curr_logprob.device
-        aggregate_per_sample: bool = bool(
-            self.cfg.get("aggregate_logprobs_per_sample", False)
-        )
+        aggregate_per_sample: bool = bool(self.cfg["aggregate_logprobs_per_sample"])
         advantages = advantages.to(device=device, dtype=curr_logprob.dtype).clamp(
             -adv_clip_max, adv_clip_max
         )

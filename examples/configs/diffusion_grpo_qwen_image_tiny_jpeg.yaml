@@ -8,7 +8,6 @@ grpo:
   val_period: 0
   seed: 42
   use_leave_one_out_baseline: true
-  normalize_rewards: true
 
 loss_fn:
   ratio_clip_min: 0.2
@@ -24,7 +23,6 @@ checkpointing:
 policy:
   model_name: "tiny-random/Qwen-Image"
   precision: "bfloat16"
-  train_global_batch_size: 4
   train_micro_batch_size: 4
   enable_gradient_checkpointing: false
   seed: 42
@@ -80,3 +78,9 @@ logger:
   swanlab_enabled: false
   monitor_gpus: false
   num_val_samples_to_print: 0
+  wandb:
+    project: "diffusion-grpo"
+    name: "diffusion-grpo-qwen-image-tiny-jpeg"
+  gpu_monitoring:
+    collection_interval: 10  # seconds between GPU usage samples
+    flush_interval: 10  # seconds between flushes to the loggers

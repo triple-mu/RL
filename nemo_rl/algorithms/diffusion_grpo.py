@@ -30,10 +30,15 @@ import os
 from typing import Any, Iterable
 
 import torch
+from pydantic import BaseModel
 
 from nemo_rl.algorithms.utils import calculate_baseline_and_std_per_prompt
 from nemo_rl.distributed.batched_data_dict import BatchedDataDict
-from nemo_rl.environments.image_reward_environment import ImageRewardEnvironment
+from nemo_rl.distributed.virtual_cluster import ClusterConfig
+from nemo_rl.environments.image_reward_environment import (
+    ImageRewardEnvConfig,
+    ImageRewardEnvironment,
+)
 from nemo_rl.models.diffusion.interfaces import (
     DiffusionGRPOAlgoConfig,
     DiffusionLossConfig,
@@ -43,8 +48,42 @@ from nemo_rl.models.diffusion.interfaces import (
 )
 from nemo_rl.models.diffusion.policy import DiffusionPolicy
 from nemo_rl.models.diffusion.sde import compute_window_mask
-from nemo_rl.utils.logger import Logger
+from nemo_rl.utils.logger import Logger, LoggerConfig
 from nemo_rl.utils.timer import Timer
+
+
+class DiffusionDataSplitConfig(BaseModel, extra="allow"):
+    """One split of the prompt dataset (.txt or .jsonl file)."""
+
+    prompt_file: str
+
+
+class DiffusionDataConfig(BaseModel, extra="allow"):
+    train: DiffusionDataSplitConfig
+    val: DiffusionDataSplitConfig | None = None
+
+
+class DiffusionEnvConfig(BaseModel, extra="allow"):
+    image_reward: ImageRewardEnvConfig
+
+
+class DiffusionCheckpointingConfig(BaseModel, extra="allow"):
+    enabled: bool = True
+    checkpoint_dir: str = "results/diffusion_grpo"
+    save_period: int = 100
+
+
+class DiffusionMasterConfig(BaseModel, extra="allow"):
+    """Schema for `examples/configs/diffusion_grpo_qwen_image*.yaml`."""
+
+    policy: DiffusionPolicyConfig
+    loss_fn: DiffusionLossConfig
+    grpo: DiffusionGRPOAlgoConfig
+    data: DiffusionDataConfig
+    env: DiffusionEnvConfig
+    logger: LoggerConfig
+    cluster: ClusterConfig
+    checkpointing: DiffusionCheckpointingConfig
 
 
 def _prompt_ids_for_baseline(rep_prompts: list[str]) -> torch.Tensor:
@@ -86,10 +125,12 @@ def _build_train_data(
     T = traj["timesteps"].shape[-1]
     gen_lp = traj["generation_logprobs"]
     B = gen_lp.shape[0]
+    # None means "full window" for both knobs (see DiffusionAlgoCfg).
+    window_range = policy_cfg.algo.sde_window_range or [0, T]
     timestep_mask_1d = compute_window_mask(
         T,
-        window_start=int((policy_cfg["algo"].get("sde_window_range") or [0, T])[0]),
-        window_size=policy_cfg["algo"].get("sde_window_size") or T,
+        window_start=int(window_range[0]),
+        window_size=int(policy_cfg.algo.sde_window_size or T),
     )
     # Always keep timestep_mask at [B, T] — the loss broadcasts to extra
     # latent-token dims as needed (per-element mode produces [B, T, N, C]).
@@ -127,9 +168,11 @@ def diffusion_grpo_train(
     num_val_images_to_save: int = 0,
 ) -> None:
     timer = Timer()
-    K = algo_cfg["num_generations_per_prompt"]
-    max_steps = algo_cfg["max_num_steps"]
-    seed_base = int(algo_cfg.get("seed", 0))
+    K = algo_cfg.num_generations_per_prompt
+    max_steps = algo_cfg.max_num_steps
+    seed_base = algo_cfg.seed
+    # The loss config crosses the Ray boundary into train_step as a dict.
+    loss_cfg_dict = loss_cfg.model_dump()
 
     def run_validation(step: int) -> None:
         _run_validation(
@@ -139,12 +182,12 @@ def diffusion_grpo_train(
             step=step,
             logger=logger,
             seed=seed_base,
-            max_val_samples=int(algo_cfg.get("max_val_samples", 0)),
+            max_val_samples=algo_cfg.max_val_samples,
             image_dir=val_image_dir,
             num_images_to_save=num_val_images_to_save,
         )
 
-    if val_dataloader is not None and bool(algo_cfg.get("val_at_start", False)):
+    if val_dataloader is not None and algo_cfg.val_at_start:
         # step=-1 → images land in `step_0/` as the pre-training baseline.
         run_validation(step=-1)
 
@@ -178,9 +221,7 @@ def diffusion_grpo_train(
             advantages_per_sample = _compute_advantages(
                 traj["prompts"],
                 rewards,
-                use_leave_one_out_baseline=bool(
-                    algo_cfg.get("use_leave_one_out_baseline", True)
-                ),
+                use_leave_one_out_baseline=algo_cfg.use_leave_one_out_baseline,
             )
 
         if traj["metadata"]:
@@ -204,11 +245,11 @@ def diffusion_grpo_train(
             loss_multiplier=loss_mult,
         )
 
-        ppo_epochs = int(algo_cfg.get("ppo_epochs", 1))
+        ppo_epochs = algo_cfg.ppo_epochs
         with timer.time("train"):
             per_epoch_metrics = []
             for _epoch in range(ppo_epochs):
-                per_epoch_metrics.append(policy.train(train_data, loss_cfg))
+                per_epoch_metrics.append(policy.train(train_data, loss_cfg_dict))
             # Aggregate: keep last-epoch values for ratio/loss (those are
             # the most informative since they reflect the largest policy drift),
             # but record per-epoch losses too.
@@ -244,7 +285,7 @@ def diffusion_grpo_train(
         ratio_val = metrics.get("train/mean_ratio")
         rew_val = metrics.get("train/reward_mean")
         epoch_losses = [
-            metrics.get(f"train/epoch_{i}/loss")
+            metrics[f"train/epoch_{i}/loss"]
             for i in range(ppo_epochs)
             if f"train/epoch_{i}/loss" in metrics
         ]
@@ -266,18 +307,18 @@ def diffusion_grpo_train(
             policy.save_checkpoint(os.path.join(checkpoint_dir, f"step_{step + 1}"))
 
         if val_dataloader is not None:
-            val_period = int(algo_cfg.get("val_period", 0))
+            val_period = algo_cfg.val_period
             if val_period > 0 and (step + 1) % val_period == 0:
                 run_validation(step=step)
 
-    if val_dataloader is not None and bool(algo_cfg.get("val_at_end", False)):
+    if val_dataloader is not None and algo_cfg.val_at_end:
         run_validation(step=max_steps - 1)
 
 
 def _run_validation(
     policy: DiffusionPolicy,
     env: ImageRewardEnvironment,
-    val_dataloader: Iterable[BatchedDataDict[Any]],
+    val_dataloader: Iterable[BatchedDataDict[Any]] | None,
     *,
     step: int,
     logger: Logger,
@@ -292,6 +333,8 @@ def _run_validation(
     validations, so `val/reward_mean` and the saved images are comparable
     over training steps.
     """
+    if val_dataloader is None:
+        return
     rewards_acc: list[torch.Tensor] = []
     n_prompts = 0
     saved = 0
