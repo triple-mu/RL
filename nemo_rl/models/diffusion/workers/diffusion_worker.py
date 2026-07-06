@@ -373,8 +373,11 @@ class DiffusionPolicyWorker:  # pragma: no cover
         data,
         *,
         use_reference: bool = False,
+        train: bool = False,
     ):
-        self.transformer.eval()
+        # train=True keeps the module in training mode so dropout (if any)
+        # stays active during the with-grad recompute inside train_step.
+        self.transformer.train(train)
         reference_forward = None
         if use_reference and self._lora_enabled:
             reference_forward = self._build_no_adapter_forward()
@@ -422,7 +425,7 @@ class DiffusionPolicyWorker:  # pragma: no cover
             chunk = data.slice(start, end)
             weight = (end - start) / total
             recompute = self.compute_transition_logprob(
-                chunk, use_reference=use_reference
+                chunk, use_reference=use_reference, train=True
             )
             loss, metrics = self._loss_fn(
                 curr_logprob=recompute["curr_logprob"],
@@ -490,11 +493,9 @@ class DiffusionPolicyWorker:  # pragma: no cover
     def shutdown(self) -> bool:
         import torch
 
-        try:
-            if torch.distributed.is_initialized():
-                torch.distributed.destroy_process_group()
-        finally:
-            return True
+        if torch.distributed.is_initialized():
+            torch.distributed.destroy_process_group()
+        return True
 
     def report_device_id(self) -> str:
         import torch

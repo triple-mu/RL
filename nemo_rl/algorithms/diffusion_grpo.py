@@ -183,14 +183,19 @@ def diffusion_grpo_train(
                 ),
             )
 
-        loss_mult = (
-            torch.tensor(
+        if traj["metadata"]:
+            # sample_trajectory replicates metadata K times alongside latents;
+            # guard the contract so a mismatch fails here, not inside the loss.
+            assert len(traj["metadata"]) == rewards.shape[0], (
+                f"metadata length {len(traj['metadata'])} != rollout batch "
+                f"{rewards.shape[0]}"
+            )
+            loss_mult = torch.tensor(
                 [m.get("loss_multiplier", 1.0) for m in traj["metadata"]],
                 dtype=torch.float32,
             )
-            if traj["metadata"]
-            else torch.ones(rewards.shape[0])
-        )
+        else:
+            loss_mult = torch.ones(rewards.shape[0])
 
         train_data = _build_train_data(
             traj,
