@@ -65,8 +65,7 @@ def apply_true_cfg(
 
 
 class QwenImagePipelineAdapter:
-    """Adapter that wires diffusers Qwen-Image components into the
-    diffusion-GRPO rollout / training loops.
+    """Adapter wiring diffusers Qwen-Image components into diffusion-GRPO loops.
 
     The constructor takes already-loaded components rather than a model path so
     the worker (which manages FSDP/PEFT lifecycle) controls instantiation.
@@ -341,8 +340,9 @@ class QwenImagePipelineAdapter:
         return out[0] if isinstance(out, tuple) else out
 
     def normalize_timestep(self, t: torch.Tensor | float) -> torch.Tensor:
-        """Public alias for normalizing a raw scheduler timestep into the
-        transformer's expected range (Qwen-Image divides by 1000).
+        """Normalize a raw scheduler timestep into the transformer's expected range.
+
+        Qwen-Image divides the timestep by 1000.
         """
         return self._normalize_timestep(t)
 

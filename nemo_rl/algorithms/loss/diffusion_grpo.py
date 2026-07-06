@@ -28,6 +28,7 @@ The formula mirrors verl-omni
 which itself follows
 https://github.com/yifan123/flow_grpo/blob/main/scripts/train_sd3_fast.py#L885.
 """
+
 from typing import Any
 
 import torch
@@ -74,7 +75,9 @@ class DiffusionGRPOLossFn:
         advantages = advantages.to(device=device, dtype=curr_logprob.dtype).clamp(
             -adv_clip_max, adv_clip_max
         )
-        generation_logprob = generation_logprob.to(device=device, dtype=curr_logprob.dtype)
+        generation_logprob = generation_logprob.to(
+            device=device, dtype=curr_logprob.dtype
+        )
         timestep_mask = timestep_mask.to(device=device)
         sample_mask = sample_mask.to(device=device)
         if aggregate_per_sample:
@@ -89,7 +92,9 @@ class DiffusionGRPOLossFn:
                 tm = tm.unsqueeze(-1)
             if curr_logprob.ndim <= 2:
                 # [B, T] → [B]. Keep all elements masked-summed.
-                curr_logprob = (curr_logprob * tm).sum(dim=tuple(range(1, curr_logprob.ndim)))
+                curr_logprob = (curr_logprob * tm).sum(
+                    dim=tuple(range(1, curr_logprob.ndim))
+                )
                 generation_logprob = (generation_logprob * tm).sum(
                     dim=tuple(range(1, generation_logprob.ndim))
                 )
@@ -127,9 +132,7 @@ class DiffusionGRPOLossFn:
             clipfrac_higher = masked_mean(
                 ((ratio - 1.0) > ratio_clip_max).float(), mask
             )
-            clipfrac_lower = masked_mean(
-                ((1.0 - ratio) > ratio_clip_min).float(), mask
-            )
+            clipfrac_lower = masked_mean(((1.0 - ratio) > ratio_clip_min).float(), mask)
             clipfrac = clipfrac_higher + clipfrac_lower
             approx_kl = masked_mean(-log_ratio, mask)
             mean_ratio = masked_mean(ratio, mask)

@@ -20,7 +20,7 @@ same shape as the input ``hidden_states``. This isolates the parity-sensitive
 math (transformer forward → CFG → SDE step → log-prob) from any model-loading
 concerns.
 """
-import math
+
 from typing import Any
 
 import pytest
@@ -212,7 +212,11 @@ def test_window_outside_zeros_logprob_in_sample_trajectory_path():
     """SDE-window-aware behaviour: steps outside the active window get 0 logprob."""
     adapter = _build_adapter()
     # Restrict the window to steps [1, 2].
-    adapter.algo_cfg = {**adapter.algo_cfg, "sde_window_size": 2, "sde_window_range": [1, 2]}
+    adapter.algo_cfg = {
+        **adapter.algo_cfg,
+        "sde_window_size": 2,
+        "sde_window_range": [1, 2],
+    }
 
     # Mimic the relevant snippet from sample_trajectory:
     timesteps_global = adapter._scheduler_timesteps()

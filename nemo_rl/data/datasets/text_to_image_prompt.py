@@ -22,6 +22,7 @@ Supports two formats:
 The collate function produces a ``BatchedDataDict[DiffusionDatumSpec]`` that
 the diffusion-GRPO trainer feeds into ``DiffusionPolicy.sample_trajectory``.
 """
+
 import json
 from pathlib import Path
 from typing import Any
@@ -76,9 +77,7 @@ class TextToImagePromptDataset(Dataset):
                 continue
             obj = json.loads(line)
             if "prompt" not in obj:
-                raise ValueError(
-                    f"jsonl entry without 'prompt' key in {path}: {obj!r}"
-                )
+                raise ValueError(f"jsonl entry without 'prompt' key in {path}: {obj!r}")
             records.append(obj)
         return records
 
@@ -89,9 +88,7 @@ class TextToImagePromptDataset(Dataset):
         rec = self._records[idx]
         datum: DiffusionDatumSpec = {
             "prompt": rec["prompt"],
-            "negative_prompt": rec.get(
-                "negative_prompt", self.negative_prompt_default
-            ),
+            "negative_prompt": rec.get("negative_prompt", self.negative_prompt_default),
             "metadata": rec.get("metadata", {}),
             "idx": idx,
             "loss_multiplier": 1.0,
@@ -107,9 +104,7 @@ def text_to_image_collate_fn(
     return BatchedDataDict(
         {
             "prompts": [item["prompt"] for item in batch],
-            "negative_prompts": [
-                item.get("negative_prompt", " ") for item in batch
-            ],
+            "negative_prompts": [item.get("negative_prompt", " ") for item in batch],
             "metadata": [item.get("metadata", {}) for item in batch],
             "idx": [item["idx"] for item in batch],
             "loss_multipliers": [item["loss_multiplier"] for item in batch],
