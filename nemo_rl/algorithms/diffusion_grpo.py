@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from typing import Any, Iterable
 
 import torch
@@ -152,6 +153,28 @@ def _build_train_data(
     return BatchedDataDict(data)
 
 
+def _latest_checkpoint(checkpoint_dir: str) -> tuple[str, int] | None:
+    """Newest complete ``step_N`` subdirectory of `checkpoint_dir`, or None.
+
+    A checkpoint counts as complete once ``optimizer.pt`` exists — it is the
+    last file :meth:`DiffusionPolicyWorker.save_checkpoint` writes.
+    """
+    if not os.path.isdir(checkpoint_dir):
+        return None
+    best: tuple[str, int] | None = None
+    for name in os.listdir(checkpoint_dir):
+        m = re.fullmatch(r"step_(\d+)", name)
+        if m is None:
+            continue
+        path = os.path.join(checkpoint_dir, name)
+        if not os.path.exists(os.path.join(path, "optimizer.pt")):
+            continue
+        step = int(m.group(1))
+        if best is None or step > best[1]:
+            best = (path, step)
+    return best
+
+
 def diffusion_grpo_train(
     policy: DiffusionPolicy,
     env: ImageRewardEnvironment,
@@ -187,12 +210,25 @@ def diffusion_grpo_train(
             num_images_to_save=num_val_images_to_save,
         )
 
-    if val_dataloader is not None and algo_cfg.val_at_start:
+    start_step = 0
+    if checkpoint_dir is not None:
+        latest = _latest_checkpoint(checkpoint_dir)
+        if latest is not None:
+            ckpt_path, start_step = latest
+            policy.load_checkpoint(ckpt_path)
+            print(
+                f"[diffusion_grpo] resuming from {ckpt_path} "
+                f"(start_step={start_step}); note: the dataloader position "
+                "is not restored, prompt order restarts from the beginning",
+                flush=True,
+            )
+
+    if val_dataloader is not None and algo_cfg.val_at_start and start_step == 0:
         # step=-1 → images land in `step_0/` as the pre-training baseline.
         run_validation(step=-1)
 
     train_iter = iter(train_dataloader)
-    for step in range(max_steps):
+    for step in range(start_step, max_steps):
         try:
             batch = next(train_iter)
         except StopIteration:

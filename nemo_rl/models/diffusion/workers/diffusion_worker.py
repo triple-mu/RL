@@ -500,6 +500,33 @@ class DiffusionPolicyWorker:  # pragma: no cover
             torch.save(self.transformer.state_dict(), f"{path}/transformer.pt")
         torch.save(self.optimizer.state_dict(), f"{path}/optimizer.pt")
 
+    def load_checkpoint(self, path: str) -> bool:
+        """Restore weights + optimizer saved by :meth:`save_checkpoint`.
+
+        Every DP rank loads the same rank-0-written checkpoint, which matches
+        the invariant that ranks hold identical weights and optimizer state.
+        """
+        import torch
+
+        if self._lora_enabled:
+            from peft.utils import set_peft_model_state_dict
+            from safetensors.torch import load_file
+
+            adapter_sd = load_file(
+                os.path.join(path, "adapter_model.safetensors"),
+                device=str(self.device),
+            )
+            set_peft_model_state_dict(self.transformer, adapter_sd)
+        else:
+            sd = torch.load(
+                os.path.join(path, "transformer.pt"), map_location=self.device
+            )
+            self.transformer.load_state_dict(sd)
+        self.optimizer.load_state_dict(
+            torch.load(os.path.join(path, "optimizer.pt"), map_location=self.device)
+        )
+        return True
+
     def prepare_for_generation(self) -> None:
         self.transformer.eval()
 

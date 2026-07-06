@@ -217,6 +217,9 @@ class DiffusionPolicy:
     def save_checkpoint(self, path: str) -> None:
         self._call_all("save_checkpoint", path=path)
 
+    def load_checkpoint(self, path: str) -> None:
+        self._call_all("load_checkpoint", path=path)
+
     def shutdown(self) -> bool:
         try:
             self._call_all("shutdown")
