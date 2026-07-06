@@ -49,9 +49,9 @@ def test_zero_advantage_yields_zero_policy_loss():
 def test_clipped_upper_branch_active_for_negative_advantage_high_ratio():
     fn = DiffusionGRPOLossFn(_cfg())
     B, T = 1, 1
-    curr = torch.tensor([[math.log(2.0)]])     # ratio = 2.0
+    curr = torch.tensor([[math.log(2.0)]])  # ratio = 2.0
     gen = torch.tensor([[0.0]])
-    adv = torch.tensor([[-1.0]])               # negative advantage
+    adv = torch.tensor([[-1.0]])  # negative advantage
     timestep_mask = torch.ones(B, T)
     sample_mask = torch.ones(B)
 
@@ -119,7 +119,9 @@ def test_timestep_mask_excludes_windowed_steps():
     # Only the first two steps are "inside" the window.
     timestep_mask = torch.tensor([[1.0, 1.0, 0.0, 0.0]])
     sample_mask = torch.ones(B)
-    curr = torch.tensor([[math.log(2.0), math.log(2.0), math.log(10.0), math.log(10.0)]])
+    curr = torch.tensor(
+        [[math.log(2.0), math.log(2.0), math.log(10.0), math.log(10.0)]]
+    )
     gen = torch.zeros(B, T)
     adv = torch.tensor([[-1.0, -1.0, -1.0, -1.0]])
 
