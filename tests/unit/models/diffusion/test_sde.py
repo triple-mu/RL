@@ -16,7 +16,7 @@ import math
 import pytest
 import torch
 
-from nemo_rl.models.diffusion.sde import sde_step_with_logprob
+from nemo_rl.models.diffusion.sde import compute_window_mask, sde_step_with_logprob
 
 
 class FakeFlowMatchScheduler:
@@ -162,6 +162,31 @@ def test_cps_step_recomputes_logprob_from_prev_sample():
     torch.testing.assert_close(actual_logprob, expected_logprob)
     torch.testing.assert_close(actual_mean, expected_mean)
     torch.testing.assert_close(actual_std_dev_t, expected_std_dev_t)
+
+
+def test_window_mask_full_when_size_is_none():
+    mask = compute_window_mask(8, 0, None)
+    assert torch.equal(mask, torch.ones(8))
+
+
+def test_window_mask_partial_window():
+    mask = compute_window_mask(8, 2, 3)
+    assert torch.equal(mask, torch.tensor([0.0, 0.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0]))
+
+
+def test_window_mask_clamped_at_end():
+    mask = compute_window_mask(8, 6, 5)
+    assert torch.equal(mask, torch.tensor([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0]))
+
+
+def test_window_mask_rejects_negative_size():
+    with pytest.raises(ValueError, match="non-negative"):
+        compute_window_mask(8, 0, -1)
+
+
+def test_window_mask_rejects_out_of_range_start():
+    with pytest.raises(ValueError, match="out of range"):
+        compute_window_mask(8, 9, 1)
 
 
 def test_sde_step_rejects_unknown_sde_type():

@@ -17,6 +17,34 @@ from typing import Any
 import torch
 
 
+def compute_window_mask(
+    num_steps: int,
+    window_start: int,
+    window_size: int | None,
+    *,
+    device: torch.device | None = None,
+    dtype: torch.dtype = torch.float32,
+) -> torch.Tensor:
+    """Return a `[num_steps]` mask that is 1 inside `[window_start, window_start + window_size)` and 0 elsewhere.
+
+    Used by both the rollout adapter (to decide which steps emit a non-zero
+    `generation_logprob`) and the loss (to mask out steps outside the active
+    SDE window). When `window_size` is None, the mask is 1 for every step.
+    """
+    if window_size is None:
+        return torch.ones(num_steps, device=device, dtype=dtype)
+    if window_size < 0:
+        raise ValueError(f"window_size must be non-negative, got {window_size}")
+    if window_start < 0 or window_start > num_steps:
+        raise ValueError(
+            f"window_start={window_start} out of range for num_steps={num_steps}"
+        )
+    mask = torch.zeros(num_steps, device=device, dtype=dtype)
+    end = min(window_start + window_size, num_steps)
+    mask[window_start:end] = 1.0
+    return mask
+
+
 def _timestep_values(timestep: float | torch.Tensor) -> list[float | torch.Tensor]:
     if isinstance(timestep, torch.Tensor):
         if timestep.ndim == 0:
@@ -35,8 +63,16 @@ def sde_step_with_logprob(
     prev_sample: torch.Tensor | None = None,
     generator: torch.Generator | None = None,
     sde_type: str = "sde",
+    reduce_per_sample: bool = True,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Step a flow-matching scheduler and return the transition log probability."""
+    """Step a flow-matching scheduler and return the transition log probability.
+
+    When ``reduce_per_sample=True`` (default) the log-probability is mean-reduced
+    over every non-batch dimension and returned with shape ``[B]``. When False
+    it is returned at full per-element resolution matching ``sample.shape``,
+    so downstream code can aggregate per-(latent-token) for cross-stack parity
+    with verl-omni's `FlowMatchSDEDiscreteScheduler.sample_previous_step`.
+    """
     model_output = model_output.float()
     sample = sample.float()
     if prev_sample is not None:
@@ -104,5 +140,6 @@ def sde_step_with_logprob(
     else:
         raise ValueError(f"Unsupported SDE type: {sde_type}")
 
-    log_prob = log_prob.mean(dim=tuple(range(1, log_prob.ndim)))
+    if reduce_per_sample:
+        log_prob = log_prob.mean(dim=tuple(range(1, log_prob.ndim)))
     return prev_sample, log_prob, prev_sample_mean, std_dev_t

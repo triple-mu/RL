@@ -1,0 +1,83 @@
+# Diffusion-GRPO smoke configuration for a single 16 GB GPU (e.g. 3080 Ti).
+# Uses `tiny-random/Qwen-Image` so the full pipeline can be downloaded in
+# minutes and the trainable LoRA fits in <4 GB VRAM with K=2, T=8.
+
+grpo:
+  num_prompts_per_step: 1
+  num_generations_per_prompt: 2
+  max_num_steps: 5
+  val_period: 0
+  seed: 42
+  use_leave_one_out_baseline: true
+  normalize_rewards: true
+
+loss_fn:
+  ratio_clip_min: 0.2
+  ratio_clip_max: 0.2
+  adv_clip_max: 5.0
+  beta: 0.0
+
+checkpointing:
+  enabled: true
+  checkpoint_dir: "results/diffusion_grpo_smoke"
+  save_period: 5
+
+policy:
+  model_name: "tiny-random/Qwen-Image"
+  precision: "bfloat16"
+  train_global_batch_size: 2
+  train_micro_batch_size: 2
+  enable_gradient_checkpointing: false
+  seed: 42
+
+  optimizer:
+    lr: 1.0e-4
+    weight_decay: 0.0
+    betas: [0.9, 0.999]
+
+  pipeline:
+    height: 128
+    width: 128
+    num_inference_steps: 8
+    true_cfg_scale: 1.0
+    max_sequence_length: 64
+    guidance_scale: null
+
+  algo:
+    noise_level: 0.7
+    sde_type: "sde"
+    sde_window_size: 8
+    sde_window_range: [0, 8]
+
+  lora_cfg:
+    enabled: true
+    rank: 4
+    alpha: 8
+    target_modules: ["to_q", "to_k", "to_v"]
+    dropout: 0.0
+    exclude_modules: null
+
+data:
+  train:
+    prompt_file: "examples/data/diffusion/smoke_prompts.txt"
+
+env:
+  image_reward:
+    plugins:
+      - name: "dummy"
+        weight: 1.0
+    num_cpus_per_worker: 1
+    num_gpus_per_worker: 0.0
+
+cluster:
+  gpus_per_node: 1
+  num_nodes: 1
+
+logger:
+  log_dir: "logs/diffusion_grpo_smoke"
+  wandb_enabled: false
+  tensorboard_enabled: false
+  mlflow_enabled: false
+  swanlab_enabled: false
+  monitor_gpus: false
+  num_val_samples_to_print: 0
