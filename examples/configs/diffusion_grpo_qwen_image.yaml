@@ -86,6 +86,7 @@ logger:
   log_dir: "logs/diffusion_grpo_qwen_image"
   wandb_enabled: false
   tensorboard_enabled: true
+  tensorboard: {}
   mlflow_enabled: false
   swanlab_enabled: false
   monitor_gpus: false
