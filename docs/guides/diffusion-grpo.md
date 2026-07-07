@@ -3,9 +3,8 @@
 Status: experimental, single-node only (multi-GPU data parallelism within the
 node). The Chinese design document at
 [`design-docs/diffusion-grpo.zh.md`](../design-docs/diffusion-grpo.zh.md) is the
-authoritative description of the algorithm, data contract, and the alignment
-against [`verl-omni`](https://github.com/volcengine/verl-omni)'s
-`flowgrpo_trainer/` recipe.
+authoritative description of the algorithm, the data contract, and the
+parallelism design.
 
 Configs are validated at startup against
 `nemo_rl.algorithms.diffusion_grpo.DiffusionMasterConfig` (pydantic v2 schema;
@@ -23,6 +22,13 @@ train → validate → checkpoint), but the *rollout* is an SDE denoising
 trajectory (`x_t → x_{t+1}`), the *log-prob* is the SDE Gaussian density per
 step, and the *reward* comes from an image reward environment rather than a
 text verifier.
+
+With `cluster.gpus_per_node > 1` the policy runs data-parallel: rollout
+prompts are scattered across workers and gradients are all-reduced, so
+samples-per-step scales with the GPU count. `grpo.num_prompts_per_step` must
+be a multiple of the worker count; the `train/dp_checksum_spread` metric
+should stay at exactly `0.0` (it monitors that all ranks hold identical
+weights).
 
 ## Single-GPU smoke
 
@@ -51,35 +57,41 @@ uv run python examples/run_diffusion_grpo.py \
     policy.algo.noise_level=0.5
 ```
 
+Point `data.train.prompt_file` / `data.val.prompt_file` at your prompt jsonl
+files; `tools/export_diffusion_prompts.py` exports a deduplicated,
+fixed-seed train/val split from a Hugging Face dataset.
+
 ## Algorithm knobs
 
-The most-tuned hyperparameters (with verl-omni equivalents in parentheses):
+The most-tuned hyperparameters:
 
-- `policy.algo.noise_level` (`actor_rollout_ref.rollout.algo.noise_level`):
-  magnitude of SDE noise injected inside the active window. Larger = more
-  diversity, lower visual quality.
-- `policy.algo.sde_window_size` (`actor_rollout_ref.rollout.algo.sde_window_size`):
-  how many consecutive denoising steps participate in the policy gradient.
-  Smaller = cheaper training step, less coverage.
-- `policy.algo.sde_window_range` (`actor_rollout_ref.rollout.algo.sde_window_range`):
-  `[start, end]` envelope from which the active window is sampled.
-- `loss_fn.ratio_clip_{min,max}` (`actor.diffusion_loss.clip_ratio`): PPO-style
-  ratio clipping bounds.
-- `loss_fn.adv_clip_max` (`actor.diffusion_loss.adv_clip_max`): pre-ratio
-  advantage clamp; matches `FlowGRPOLoss.compute_loss`.
+- `policy.algo.noise_level`: magnitude of SDE noise injected inside the
+  active window. Larger = more diversity, lower visual quality.
+- `policy.algo.sde_window_size`: how many consecutive denoising steps
+  participate in the policy gradient. Smaller = cheaper training step, less
+  coverage.
+- `policy.algo.sde_window_range`: `[start, end]` envelope from which the
+  active window is sampled.
+- `loss_fn.ratio_clip_{min,max}`: PPO-style ratio clipping bounds.
+- `loss_fn.adv_clip_max`: pre-ratio advantage clamp.
 - `loss_fn.beta`: coefficient for the Gaussian-mean KL term against the
   reference policy. Set to 0 to disable KL (default smoke config).
+- `policy.train_micro_batch_size`: chunk size for the with-grad logprob
+  recompute during training; bounds peak memory independently of the global
+  batch size.
 
 ## Reward plugins
 
 `nemo_rl/environments/image_reward_environment.py` ships three plugins:
 
 - `dummy` — deterministic (prompt hash + image mean), CPU-only; smoke tests.
-- `jpeg_compressibility` — `-jpeg_kb/500`, ported from verl-omni; used by the
-  `_tiny_jpeg*` comparison configs.
+- `jpeg_compressibility` — rule-based `-jpeg_kb/500`, zero external
+  dependencies.
 - `pickscore` — the PickScore_v1 CLIP-H preference model (~4GB download on
-  first use; works on both transformers 4.x and 5.x). Used by the h200 config
-  and the nightly recipe.
+  first use; works on both transformers 4.x and 5.x). Used by the exemplar
+  config and the nightly recipe. Scores on CPU workers by default; to score
+  on a GPU, reserve one by lowering `cluster.gpus_per_node` and set
+  `env.image_reward.num_gpus_per_worker: 1.0`.
 
 To register a new reward plugin:
 
@@ -107,11 +119,5 @@ env:
         weight: 0.3
 ```
 
-## Comparing against verl-omni
-
-The Chinese design document includes a section-by-section mapping of NeMo-RL
-symbols against verl-omni's diffusion stack. A practical TSV-based comparison
-recipe is documented there under "verl-omni 基线对照"; in short, run
-`verl-omni examples/flowgrpo_trainer/run_qwen_image_ocr_lora.sh` with the same
-`tiny-random/Qwen-Image` substitution and compare `policy_loss`, `mean_ratio`,
-`clipfrac`, and `kl_loss` curves rather than absolute numbers.
+Images arrive as CPU `NCHW` float tensors in `[0, 1]`; a GPU-scoring plugin
+moves them to its device and returns CPU scores.
