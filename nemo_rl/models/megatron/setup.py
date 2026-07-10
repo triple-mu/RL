@@ -35,6 +35,7 @@ from megatron.bridge.training.config import (
     CheckpointConfig,
     ConfigContainer,
     DistributedDataParallelConfig,
+    DistributedInitConfig,
     LoggerConfig,
     OptimizerConfig,
     SchedulerConfig,
@@ -1019,10 +1020,18 @@ def _create_megatron_config(
             "Set policy.megatron_cfg.distributed_data_parallel_config."
             "overlap_param_gather=false."
         )
+
+    dist_cfg = DistributedInitConfig()
+    if "use_gloo_process_groups" in config["megatron_cfg"]:
+        dist_cfg.use_gloo_process_groups = config["megatron_cfg"][
+            "use_gloo_process_groups"
+        ]
+
     return ConfigContainer(
         model=model_cfg,
         checkpoint=checkpoint_config,
         logger=LoggerConfig(logging_level=0),
+        dist=dist_cfg,
         train=TrainingConfig(
             micro_batch_size=1,  # ignored
             global_batch_size=config["train_global_batch_size"],  # ignored
@@ -1197,11 +1206,10 @@ def setup_model_and_optimizer(
     # Context used for persisting some state between checkpoint saves.
     checkpointing_context = init_checkpointing_context(megatron_cfg.checkpoint)
 
-    # Tokenizer
-    if megatron_cfg.tokenizer.hf_tokenizer_kwargs is None:
-        megatron_cfg.tokenizer.hf_tokenizer_kwargs = {}
-    megatron_cfg.tokenizer.hf_tokenizer_kwargs["trust_remote_code"] = True
-    megatron_cfg.tokenizer.hf_tokenizer_kwargs["use_fast"] = True
+    # Set the attribute directly instead of updating hf_tokenizer_kwargs, because
+    # Megatron-Bridge's TokenizerConfig snapshots hf_tokenizer_kwargs into plain
+    # attributes at __post_init__ and never re-reads the dict afterwards.
+    megatron_cfg.tokenizer.trust_remote_code = True
     build_tokenizer(
         megatron_cfg.tokenizer,
         make_vocab_size_divisible_by=megatron_cfg.model.make_vocab_size_divisible_by
