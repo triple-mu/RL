@@ -223,10 +223,88 @@ class PickScoreReward:
         return {"pickscore": torch.cat(scores)}
 
 
+def _levenshtein(a: str, b: str) -> int:
+    if len(a) < len(b):
+        a, b = b, a
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        curr = [i]
+        for j, cb in enumerate(b, 1):
+            curr.append(min(prev[j] + 1, curr[j - 1] + 1, prev[j - 1] + (ca != cb)))
+        prev = curr
+    return prev[-1]
+
+
+def ocr_edit_distance_score(recognized: str, target: str) -> float:
+    """flow_grpo `ocr.py` scoring: substring hit → 1.0, else 1 - dist/len(gt).
+
+    Both strings are lower-cased and space-stripped; the edit distance is
+    capped at len(gt) so the score stays in [0, 1]. Empty ground truth → 0.
+    """
+    target_n = target.lower().replace(" ", "")
+    if not target_n:
+        return 0.0
+    recognized_n = recognized.lower().replace(" ", "")
+    if target_n in recognized_n:
+        return 1.0
+    dist = min(_levenshtein(recognized_n, target_n), len(target_n))
+    return 1.0 - dist / len(target_n)
+
+
+class OcrEditDistanceReward:
+    """Rule-based OCR reward (PaddleOCR + edit distance vs metadata ground_truth).
+
+    The primary Flow-GRPO text-rendering task reward. `ocr_fn` is injectable
+    for tests; the default engine loads PaddleOCR (en, no angle cls) lazily so
+    the module imports without the paddle dependency installed.
+    """
+
+    name: str = "ocr"
+    weight: float = 1.0
+
+    def __init__(self, ocr_fn: Callable[[Any], str] | None = None) -> None:
+        if ocr_fn is not None:
+            self._ocr_fn = ocr_fn
+            return
+        # Lazy import: paddleocr is an optional heavy dependency.
+        from paddleocr import PaddleOCR  # pyrefly: ignore  # import-error
+
+        engine = PaddleOCR(use_angle_cls=False, lang="en", show_log=False)
+
+        def run(img_np: Any) -> str:  # HWC uint8
+            result = engine.ocr(img_np, cls=False)
+            lines = result[0] if result and result[0] else []
+            return " ".join(item[1][0] for item in lines)
+
+        self._ocr_fn = run
+
+    def score(
+        self,
+        images: torch.Tensor,
+        prompts: list[str],
+        metadata: list[dict[str, Any]],
+    ) -> dict[str, torch.Tensor]:
+        if images.shape[0] != len(metadata):
+            raise ValueError(
+                f"images batch={images.shape[0]} but metadata len={len(metadata)}"
+            )
+        arr = (
+            (images * 255).round().clamp(0, 255).to(torch.uint8).cpu().numpy()
+        ).transpose(0, 2, 3, 1)
+        scores = [
+            ocr_edit_distance_score(
+                self._ocr_fn(img_np), str(meta.get("ground_truth", ""))
+            )
+            for img_np, meta in zip(arr, metadata)
+        ]
+        return {"ocr": torch.tensor(scores, dtype=torch.float32)}
+
+
 _PLUGIN_REGISTRY: dict[str, Callable[[], BaseImageReward]] = {
     "dummy": lambda: DummyImageReward(),
     "jpeg_compressibility": lambda: JpegCompressibilityReward(),
     "pickscore": lambda: PickScoreReward(),
+    "ocr": lambda: OcrEditDistanceReward(),
 }
 
 

@@ -165,6 +165,31 @@ def test_pickscore_rejects_size_mismatch():
         plugin.score(torch.rand(2, 3, 8, 8), ["only one"], [{}])
 
 
+def test_ocr_edit_distance_score_semantics():
+    from nemo_rl.environments.image_reward_environment import ocr_edit_distance_score
+
+    assert ocr_edit_distance_score("Hello World", "hello world") == 1.0  # 归一后精确
+    assert ocr_edit_distance_score("xx helloworld yy", "Hello World") == 1.0  # 子串命中
+    assert ocr_edit_distance_score("helxo", "hello") == 1.0 - 1 / 5  # 1 次编辑
+    assert ocr_edit_distance_score("", "hello") == 0.0  # 距离封顶 len(gt)
+    assert ocr_edit_distance_score("anything", "") == 0.0  # 空 gt 记 0
+
+
+def test_ocr_reward_plugin_with_injected_engine():
+    import torch
+
+    from nemo_rl.environments.image_reward_environment import OcrEditDistanceReward
+
+    plugin = OcrEditDistanceReward(ocr_fn=lambda img_np: "hello")
+    images = torch.rand(2, 3, 8, 8)
+    out = plugin.score(
+        images,
+        ["p1", "p2"],
+        [{"ground_truth": "hello"}, {"ground_truth": "help"}],
+    )
+    assert out["ocr"].tolist() == [1.0, 1.0 - 2 / 4]  # hello→help 距离 2
+
+
 @pytest.fixture
 def ray_init_and_shutdown():
     if not ray.is_initialized():
