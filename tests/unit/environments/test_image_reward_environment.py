@@ -101,6 +101,33 @@ def test_image_reward_environment_two_plugins_sum(ray_init_and_shutdown):  # noq
         _PLUGIN_REGISTRY.pop("half", None)
 
 
+def test_sharded_reward_pool_matches_single_worker(ray_init_and_shutdown):  # noqa: F811
+    import torch
+
+    from nemo_rl.environments.image_reward_environment import ImageRewardEnvironment
+
+    images = torch.rand(6, 3, 8, 8)
+    prompts = [f"p{i}" for i in range(6)]
+    meta = [{} for _ in range(6)]
+    env1 = ImageRewardEnvironment(
+        {"plugins": [{"name": "dummy"}], "num_cpus_per_worker": 1}
+    )
+    env2 = ImageRewardEnvironment(
+        {
+            "plugins": [{"name": "dummy"}],
+            "num_cpus_per_worker": 1,
+            "num_workers_per_plugin": 4,  # 6 图 → 4 个 replica 不均匀分片
+        }
+    )
+    # extra="allow" 会吞掉未实现的字段，仅比对分数会假绿；先断言 replica 数
+    assert env2._replicas_per_plugin == 4
+    r1, _ = env1.score_images(images, prompts, meta)
+    r2, _ = env2.score_images(images, prompts, meta)
+    assert torch.allclose(r1, r2)
+    env1.shutdown()
+    env2.shutdown()
+
+
 def test_pickscore_is_registered():
     assert "pickscore" in _PLUGIN_REGISTRY
 
@@ -195,7 +222,8 @@ def ray_init_and_shutdown():
     if not ray.is_initialized():
         ray.init(
             include_dashboard=False,
-            num_cpus=2,
+            # The sharded-pool test schedules 5 concurrent 1-CPU actors.
+            num_cpus=8,
             local_mode=False,
             ignore_reinit_error=True,
         )

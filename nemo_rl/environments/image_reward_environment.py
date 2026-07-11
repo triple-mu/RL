@@ -48,6 +48,8 @@ class ImageRewardEnvConfig(BaseModel, extra="allow"):
     plugins: list[ImageRewardPluginSpec]
     num_cpus_per_worker: int = 2
     num_gpus_per_worker: float = 0.0
+    # Reward actor replicas per plugin; raise for slow rewards (e.g. OCR).
+    num_workers_per_plugin: int = 1
 
 
 class BaseImageReward(Protocol):
@@ -316,19 +318,21 @@ def register_image_reward(name: str, factory: Callable[[], BaseImageReward]) -> 
 
 
 class ImageRewardEnvironment:
-    """A Ray-managed pool of one reward worker per plugin.
+    """A Ray-managed pool of `num_workers_per_plugin` reward workers per plugin.
 
     Each plugin contributes a weighted component to the aggregated reward.
-    Components are summed; per-component means are emitted as metrics.
+    Components are summed; per-component means are emitted as metrics. Batches
+    are sharded contiguously across a plugin's replicas for throughput.
     """
 
     def __init__(self, config: ImageRewardEnvConfig | dict[str, Any]) -> None:
         # Normalize through the schema so plugin weights and worker resources
         # take their defaults from ImageRewardEnvConfig, not call sites.
         cfg = ImageRewardEnvConfig.model_validate(config)
-        self._workers: list[ray.actor.ActorHandle] = []
+        self._workers: list[list[ray.actor.ActorHandle]] = []
         self._weights: list[float] = []
         self._names: list[str] = []
+        self._replicas_per_plugin = cfg.num_workers_per_plugin
         for spec in cfg.plugins:
             if spec.name not in _PLUGIN_REGISTRY:
                 raise KeyError(
@@ -336,10 +340,13 @@ class ImageRewardEnvironment:
                     f"registered={list(_PLUGIN_REGISTRY)}"
                 )
             factory = _PLUGIN_REGISTRY[spec.name]
-            actor = _RewardWorker.options(
-                num_cpus=cfg.num_cpus_per_worker, num_gpus=cfg.num_gpus_per_worker
-            ).remote(factory)
-            self._workers.append(actor)
+            group = [
+                _RewardWorker.options(
+                    num_cpus=cfg.num_cpus_per_worker, num_gpus=cfg.num_gpus_per_worker
+                ).remote(factory)
+                for _ in range(cfg.num_workers_per_plugin)
+            ]
+            self._workers.append(group)
             self._names.append(spec.name)
             self._weights.append(spec.weight)
 
@@ -349,16 +356,41 @@ class ImageRewardEnvironment:
         prompts: list[str],
         metadata: list[dict[str, Any]],
     ) -> tuple[torch.Tensor, dict[str, Any]]:
-        futures = [w.score.remote(images, prompts, metadata) for w in self._workers]
-        per_worker_results: list[dict[str, torch.Tensor]] = ray.get(futures)
-
-        total = torch.zeros(images.shape[0], dtype=torch.float32)
+        n = images.shape[0]
+        futures = []
+        for group in self._workers:
+            k = len(group)
+            # Contiguous shards; empty shards (when n < k) are skipped.
+            bounds = [(i * n // k, (i + 1) * n // k) for i in range(k)]
+            futures.append(
+                [
+                    (
+                        lo,
+                        hi,
+                        group[i].score.remote(
+                            images[lo:hi], prompts[lo:hi], metadata[lo:hi]
+                        ),
+                    )
+                    for i, (lo, hi) in enumerate(bounds)
+                    if hi > lo
+                ]
+            )
+        total = torch.zeros(n, dtype=torch.float32)
         components: dict[str, torch.Tensor] = {}
-        for name, weight, result in zip(self._names, self._weights, per_worker_results):
-            for comp_key, comp_value in result.items():
-                full_key = f"{name}/{comp_key}"
-                components[full_key] = comp_value
-                total = total + weight * comp_value
+        # Reassemble each component tensor from its shards by slice position.
+        for name, shard_futs in zip(self._names, futures):
+            for lo, hi, fut in shard_futs:
+                for comp_key, comp_value in ray.get(fut).items():
+                    full_key = f"{name}/{comp_key}"
+                    if full_key not in components:
+                        components[full_key] = torch.zeros(n, dtype=torch.float32)
+                    components[full_key][lo:hi] = comp_value
+        # Each component belongs to exactly one plugin (distinct names), so
+        # every weighted contribution is applied exactly once.
+        for name, weight in zip(self._names, self._weights):
+            for full_key, comp_value in components.items():
+                if full_key.startswith(f"{name}/"):
+                    total = total + weight * comp_value
         metrics: dict[str, Any] = {
             f"reward/{k}_mean": float(v.float().mean().item())
             for k, v in components.items()
@@ -367,7 +399,8 @@ class ImageRewardEnvironment:
         return total, metrics
 
     def shutdown(self) -> bool:
-        for w in self._workers:
-            ray.kill(w)
+        for group in self._workers:
+            for w in group:
+                ray.kill(w)
         self._workers = []
         return True
