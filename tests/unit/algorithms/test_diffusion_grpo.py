@@ -63,6 +63,61 @@ def test_master_config_rejects_kl_with_full_param():
         DiffusionMasterConfig.model_validate(cfg)
 
 
+def test_run_validation_passes_generation_overrides():
+    import torch
+
+    from nemo_rl.algorithms.diffusion_grpo import _run_validation
+
+    seen = []
+
+    class FakePolicy:
+        def sample_trajectory(
+            self,
+            prompts,
+            negative_prompts,
+            metadata,
+            *,
+            K,
+            seed,
+            generation_overrides=None,
+        ):
+            seen.append(generation_overrides)
+            B = len(prompts) * K
+            return {
+                "prompts": prompts * K,
+                "negative_prompts": negative_prompts * K,
+                "metadata": metadata * K,
+                "images": torch.zeros(B, 3, 4, 4),
+                "latents": torch.zeros(B, 2, 4),
+                "timesteps": torch.zeros(B, 1),
+                "generation_logprobs": torch.zeros(B, 1),
+                "timestep_mask": torch.zeros(B, 1),
+                "prompt_embeds": torch.zeros(B, 1, 1),
+                "prompt_embeds_mask": torch.ones(B, 1),
+                "negative_prompt_embeds": torch.zeros(B, 1, 1),
+                "negative_prompt_embeds_mask": torch.ones(B, 1),
+            }
+
+    class FakeEnv:
+        def score_images(self, images, prompts, metadata):
+            return torch.zeros(images.shape[0]), {}
+
+    class FakeLogger:
+        def log_metrics(self, *a, **k):
+            pass
+
+    _run_validation(
+        FakePolicy(),
+        FakeEnv(),
+        [{"prompts": ["p"], "negative_prompts": [" "], "metadata": [{}]}],
+        step=0,
+        logger=FakeLogger(),
+        seed=42,
+        generation_overrides={"num_inference_steps": 40},
+    )
+    assert seen == [{"num_inference_steps": 40}]
+
+
 def test_build_train_data_slices_to_window_columns():
     import torch
 

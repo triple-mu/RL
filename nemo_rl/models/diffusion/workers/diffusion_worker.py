@@ -156,11 +156,7 @@ class DiffusionPolicyWorker:  # pragma: no cover
         }[precision]
 
     def _load_pipeline(self) -> None:
-        import numpy as np
         from diffusers import QwenImagePipeline
-        from diffusers.pipelines.qwenimage.pipeline_qwenimage import (
-            calculate_shift,
-        )
 
         model_name = self.config["model_name"]
         pipe = QwenImagePipeline.from_pretrained(model_name, torch_dtype=self.dtype)
@@ -176,7 +172,23 @@ class DiffusionPolicyWorker:  # pragma: no cover
             getattr(self.transformer.config, "in_channels", 64) // 4
         )
 
-        num_inference_steps = self.config["pipeline"]["num_inference_steps"]
+        self._set_scheduler_timesteps(self.config["pipeline"]["num_inference_steps"])
+
+        for module in (self.text_encoder, self.vae):
+            for p in module.parameters():
+                p.requires_grad_(False)
+            module.eval()
+
+        # QwenImageTransformer2DModel gates on `torch.is_grad_enabled() and
+        # self.gradient_checkpointing`, so this is a no-op during no_grad
+        # rollout and only recomputes activations in the training recompute.
+        if self.config["enable_gradient_checkpointing"]:
+            self.transformer.enable_gradient_checkpointing()
+
+    def _set_scheduler_timesteps(self, num_inference_steps: int) -> None:
+        import numpy as np
+        from diffusers.pipelines.qwenimage.pipeline_qwenimage import calculate_shift
+
         sigmas = np.linspace(1.0, 1 / num_inference_steps, num_inference_steps)
         height = self.config["pipeline"]["height"]
         width = self.config["pipeline"]["width"]
@@ -191,22 +203,8 @@ class DiffusionPolicyWorker:  # pragma: no cover
             self.scheduler.config.get("max_shift", 1.15),
         )
         self.scheduler.set_timesteps(
-            num_inference_steps,
-            device=self.device,
-            sigmas=sigmas.tolist(),
-            mu=mu,
+            num_inference_steps, device=self.device, sigmas=sigmas.tolist(), mu=mu
         )
-
-        for module in (self.text_encoder, self.vae):
-            for p in module.parameters():
-                p.requires_grad_(False)
-            module.eval()
-
-        # QwenImageTransformer2DModel gates on `torch.is_grad_enabled() and
-        # self.gradient_checkpointing`, so this is a no-op during no_grad
-        # rollout and only recomputes activations in the training recompute.
-        if self.config["enable_gradient_checkpointing"]:
-            self.transformer.enable_gradient_checkpointing()
 
     def _maybe_apply_lora(self) -> None:
         lora_cfg = self.config["lora_cfg"]
@@ -390,14 +388,34 @@ class DiffusionPolicyWorker:  # pragma: no cover
         *,
         K: int,
         seed: int | None = None,
+        generation_overrides: dict[str, Any] | None = None,
     ):
         import torch
 
         self.transformer.eval()
-        with torch.no_grad():
-            return self.adapter.sample_trajectory(
-                prompts, negative_prompts, metadata, K=K, seed=seed
-            )
+        if generation_overrides is None:
+            with torch.no_grad():
+                return self.adapter.sample_trajectory(
+                    prompts, negative_prompts, metadata, K=K, seed=seed
+                )
+        train_steps = int(self.config["pipeline"]["num_inference_steps"])
+        val_steps = int(generation_overrides.get("num_inference_steps", train_steps))
+        saved_algo = self.adapter.algo_cfg
+        self._set_scheduler_timesteps(val_steps)
+        # 纯 ODE：窗口置空 → 每步 stochastic=False，logprob 全 0
+        self.adapter.algo_cfg = {
+            **self.config["algo"],
+            "sde_window_size": 0,
+            "sde_window_range": None,
+        }
+        try:
+            with torch.no_grad():
+                return self.adapter.sample_trajectory(
+                    prompts, negative_prompts, metadata, K=K, seed=seed
+                )
+        finally:
+            self.adapter.algo_cfg = saved_algo
+            self._set_scheduler_timesteps(train_steps)
 
     def compute_transition_logprob(
         self,

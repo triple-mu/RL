@@ -225,6 +225,7 @@ def diffusion_grpo_train(
             max_val_samples=algo_cfg.max_val_samples,
             image_dir=val_image_dir,
             num_images_to_save=num_val_images_to_save,
+            generation_overrides=algo_cfg.val_generation.model_dump(),
         )
 
     start_step = 0
@@ -378,12 +379,14 @@ def _run_validation(
     max_val_samples: int = 0,
     image_dir: str | None = None,
     num_images_to_save: int = 0,
+    generation_overrides: dict[str, Any] | None = None,
 ) -> None:
     """Score the val set with K=1 and a fixed seed.
 
     The fixed seed keeps initial latents identical across successive
     validations, so `val/reward_mean` and the saved images are comparable
-    over training steps.
+    over training steps. `generation_overrides` (e.g. the val-time
+    `num_inference_steps`) switches the rollout to the deterministic ODE.
     """
     if val_dataloader is None:
         return
@@ -400,6 +403,7 @@ def _run_validation(
             metadata=batch["metadata"],
             K=1,
             seed=seed,
+            generation_overrides=generation_overrides,
         )
         # Reward workers may be CPU-only; keep CUDA tensors trainer-local
         # (same convention as the training path).

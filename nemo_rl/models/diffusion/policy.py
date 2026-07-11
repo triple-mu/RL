@@ -125,6 +125,7 @@ class DiffusionPolicy:
         *,
         K: int,
         seed: int | None = None,
+        generation_overrides: dict[str, Any] | None = None,
     ) -> DiffusionTrajectorySpec:
         n = self.num_workers
         if n == 1 or len(prompts) < n or len(prompts) % n != 0:
@@ -142,6 +143,7 @@ class DiffusionPolicy:
                 metadata=metadata,
                 K=K,
                 seed=seed,
+                generation_overrides=generation_overrides,
             )
             return ray.get(future)
         shard = len(prompts) // n
@@ -157,6 +159,7 @@ class DiffusionPolicy:
                     # Distinct per-worker seed so initial latents decorrelate
                     # across ranks while staying reproducible.
                     seed=None if seed is None else seed + i * 7919,
+                    generation_overrides=generation_overrides,
                 )
             )
         return self._merge_trajectories(ray.get(futures))

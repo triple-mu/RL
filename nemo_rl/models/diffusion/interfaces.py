@@ -85,6 +85,16 @@ class DiffusionPolicyConfig(BaseModel, extra="allow"):
     lora_cfg: DiffusionLoraCfg = Field(default_factory=DiffusionLoraCfg)
 
 
+class DiffusionValGenerationCfg(BaseModel, extra="allow"):
+    """Validation-time generation overrides.
+
+    Validation always samples with the deterministic ODE (no SDE window, no
+    logprob collection); only the denoising step count is configurable.
+    """
+
+    num_inference_steps: int = 40
+
+
 class DiffusionGRPOAlgoConfig(BaseModel, extra="allow"):
     """Top-level diffusion-GRPO training-loop config."""
 
@@ -100,6 +110,9 @@ class DiffusionGRPOAlgoConfig(BaseModel, extra="allow"):
     # 0 validates on the full val dataloader.
     max_val_samples: int = 0
     use_leave_one_out_baseline: bool = True
+    val_generation: DiffusionValGenerationCfg = Field(
+        default_factory=DiffusionValGenerationCfg
+    )
 
 
 class DiffusionLossConfig(BaseModel, extra="allow"):
