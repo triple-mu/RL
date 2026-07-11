@@ -39,6 +39,22 @@ from typing import Any
 import ray
 
 
+def build_no_adapter_forward(transformer: Any, forward_fn: Any) -> Any:
+    """Reference-policy forward: run `forward_fn` with the PEFT adapter disabled.
+
+    Returns a closure matching the `forward_override(**kwargs)` convention of
+    `QwenImagePipelineAdapter._denoise_step`; `forward_fn` is the worker's
+    `_forward_transformer_with_img_shapes`, so the reference forward shares the
+    exact input preparation (dtype cast, img_shapes, guidance) of the policy.
+    """
+
+    def forward(**kwargs: Any) -> Any:
+        with transformer.disable_adapter():
+            return forward_fn(transformer, **kwargs)
+
+    return forward
+
+
 @ray.remote
 class DiffusionPolicyWorker:  # pragma: no cover
     """Ray actor owning one Qwen-Image pipeline + LoRA optimizer."""
@@ -394,7 +410,13 @@ class DiffusionPolicyWorker:  # pragma: no cover
         # stays active during the with-grad recompute inside train_step.
         self.transformer.train(train)
         reference_forward = None
-        if use_reference and self._lora_enabled:
+        if use_reference:
+            if not self._lora_enabled:
+                raise RuntimeError(
+                    "beta > 0 requires LoRA: the reference policy is the base "
+                    "model with the adapter disabled; full-parameter training "
+                    "has no reference copy"
+                )
             reference_forward = self._build_no_adapter_forward()
         curr, means, stds, refs = self.adapter.compute_transition_logprob(
             data,
@@ -409,12 +431,9 @@ class DiffusionPolicyWorker:  # pragma: no cover
         }
 
     def _build_no_adapter_forward(self):
-        def forward(transformer, **kwargs):
-            with self.transformer.disable_adapter():
-                out = self.transformer(return_dict=False, **kwargs)
-            return out[0] if isinstance(out, tuple) else out
-
-        return forward
+        return build_no_adapter_forward(
+            self.transformer, self._forward_transformer_with_img_shapes
+        )
 
     def train_step(self, data, loss_cfg):
         import torch

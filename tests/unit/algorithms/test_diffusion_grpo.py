@@ -46,6 +46,23 @@ def test_latest_checkpoint_all_incomplete_returns_none(tmp_path):
     assert _latest_checkpoint(str(tmp_path)) is None
 
 
+def test_master_config_rejects_kl_with_full_param():
+    import pytest
+    from omegaconf import OmegaConf
+
+    from nemo_rl.algorithms.diffusion_grpo import DiffusionMasterConfig
+    from nemo_rl.utils.config import load_config
+
+    cfg = OmegaConf.to_container(
+        load_config("examples/configs/diffusion_grpo_qwen_image_tiny.yaml"),
+        resolve=True,
+    )
+    cfg["loss_fn"]["beta"] = 0.04
+    cfg["policy"]["lora_cfg"]["enabled"] = False
+    with pytest.raises(Exception, match="beta"):
+        DiffusionMasterConfig.model_validate(cfg)
+
+
 def test_build_train_data_slices_to_window_columns():
     import torch
 

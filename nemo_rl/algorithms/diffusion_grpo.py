@@ -31,7 +31,7 @@ import re
 from typing import Any, Iterable
 
 import torch
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 
 from nemo_rl.algorithms.utils import calculate_baseline_and_std_per_prompt
 from nemo_rl.distributed.batched_data_dict import BatchedDataDict
@@ -84,6 +84,16 @@ class DiffusionMasterConfig(BaseModel, extra="allow"):
     logger: LoggerConfig
     cluster: ClusterConfig
     checkpointing: DiffusionCheckpointingConfig
+
+    @model_validator(mode="after")
+    def _kl_requires_lora(self) -> "DiffusionMasterConfig":
+        if self.loss_fn.beta > 0 and not self.policy.lora_cfg.enabled:
+            raise ValueError(
+                "loss_fn.beta > 0 (Gaussian KL vs the reference policy) requires "
+                "policy.lora_cfg.enabled=true — the reference is the base model "
+                "with the LoRA adapter disabled. Set beta to 0 or enable LoRA."
+            )
+        return self
 
 
 def _prompt_ids_for_baseline(rep_prompts: list[str]) -> torch.Tensor:

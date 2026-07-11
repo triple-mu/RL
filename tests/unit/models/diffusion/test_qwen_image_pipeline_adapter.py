@@ -346,6 +346,64 @@ def test_trajectory_carries_timestep_mask_matching_nonzero_logprobs():
     assert torch.all(traj["generation_logprobs"][mask == 1] != 0)
 
 
+def test_build_no_adapter_forward_disables_adapter_and_matches_call_convention():
+    from contextlib import contextmanager
+
+    from nemo_rl.models.diffusion.workers.diffusion_worker import (
+        build_no_adapter_forward,
+    )
+
+    calls = []
+
+    class FakePeftModel:
+        def __init__(self):
+            self.adapter_disabled = False
+
+        @contextmanager
+        def disable_adapter(self):
+            self.adapter_disabled = True
+            try:
+                yield
+            finally:
+                self.adapter_disabled = False
+
+    model = FakePeftModel()
+
+    def forward_fn(transformer, **kwargs):
+        assert transformer is model
+        assert transformer.adapter_disabled  # 必须在 disable 上下文内
+        calls.append(kwargs)
+        return kwargs["hidden_states"] * 0
+
+    fwd = build_no_adapter_forward(model, forward_fn)
+    x = torch.ones(2, 3)
+    # pipeline._denoise_step 的调用约定：不带 transformer 位置参数
+    out = fwd(hidden_states=x, timestep=torch.tensor([1.0]))
+    assert torch.equal(out, torch.zeros(2, 3))
+    assert calls and "timestep" in calls[0]
+    assert not model.adapter_disabled  # 上下文退出后恢复
+
+
+def test_reference_path_yields_zero_kl_when_ref_equals_policy():
+    adapter = _make_window_adapter()  # Task 1 的 helper
+    traj = adapter.sample_trajectory(["a"], [" "], [{}], K=2, seed=3)
+    data = {
+        "latents": traj["latents"],
+        "timesteps": traj["timesteps"],
+        "prompt_embeds": traj["prompt_embeds"],
+        "prompt_embeds_mask": traj["prompt_embeds_mask"],
+        "negative_prompt_embeds": traj["negative_prompt_embeds"],
+        "negative_prompt_embeds_mask": traj["negative_prompt_embeds_mask"],
+    }
+    # reference forward = 同一个 forward（模拟 LoRA 零增量的初始状态）
+    curr, means, stds, refs = adapter.compute_transition_logprob(
+        data,
+        use_reference=True,
+        reference_forward_fn=lambda **kw: torch.zeros_like(kw["hidden_states"]),
+    )
+    assert refs is not None and torch.allclose(refs, means)
+
+
 def test_pipeline_adapter_raises_when_encode_fn_missing():
     adapter = _build_adapter()
     with pytest.raises(RuntimeError, match="encode_condition_fn"):
