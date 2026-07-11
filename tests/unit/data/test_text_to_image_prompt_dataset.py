@@ -78,3 +78,23 @@ def test_collate_fn_packs_into_batched_data_dict(tmp_path):
     assert batch["idx"] == [0, 1, 2]
     assert batch["loss_multipliers"] == [1.0, 1.0, 1.0]
     assert batch["task_names"] == ["text_to_image"] * 3
+
+
+def test_ocr_line_to_record_extracts_ground_truth():
+    from tools.export_ocr_prompts import ocr_line_to_record
+
+    line = 'The image displays "Hello World".'
+    rec = ocr_line_to_record(line)
+    assert rec == {
+        "prompt": line,
+        "metadata": {"ground_truth": "Hello World"},
+    }
+
+
+def test_ocr_line_to_record_rejects_line_without_quotes():
+    import pytest
+
+    from tools.export_ocr_prompts import ocr_line_to_record
+
+    with pytest.raises(ValueError):
+        ocr_line_to_record("no quoted text here")
