@@ -223,9 +223,11 @@ def test_window_outside_zeros_logprob_in_sample_trajectory_path():
     T = timesteps_global.shape[0]
     from nemo_rl.models.diffusion.sde import compute_window_mask
 
+    # range=[1,2) with size=2 pins the start at 1 (single legal start), so the
+    # sampled window is deterministic regardless of seed.
     mask = compute_window_mask(
         T,
-        window_start=adapter._effective_window_start(T),
+        window_start=adapter._sample_window_start(T, seed=None),
         window_size=adapter._effective_window_size(T),
     )
     expected = torch.tensor([0.0, 1.0, 1.0, 0.0])
@@ -281,6 +283,67 @@ def test_parity_bf16_within_loose_tolerance(dtype: torch.dtype):
     tol = 1e-4 if dtype == torch.float32 else 1e-2
     diff = (curr_lp - sampling_logprobs_stacked).abs().max().item()
     assert diff < tol, f"{dtype} logprob drift {diff:.2e} exceeds {tol:.0e}"
+
+
+def _make_window_adapter(num_steps=8, window_size=2, window_range=(0, 5)):
+    from diffusers import FlowMatchEulerDiscreteScheduler
+
+    from nemo_rl.models.diffusion.pipeline import QwenImagePipelineAdapter
+
+    scheduler = FlowMatchEulerDiscreteScheduler()
+    scheduler.set_timesteps(num_steps)
+    dummy_embeds = lambda prompts, negs: {
+        "prompt_embeds": torch.zeros(len(prompts), 4, 8),
+        "prompt_embeds_mask": torch.ones(len(prompts), 4, dtype=torch.long),
+        "negative_prompt_embeds": torch.zeros(len(prompts), 4, 8),
+        "negative_prompt_embeds_mask": torch.ones(len(prompts), 4, dtype=torch.long),
+    }
+    return QwenImagePipelineAdapter(
+        transformer=torch.nn.Identity(),
+        scheduler=scheduler,
+        pipeline_cfg={"height": 32, "width": 32, "true_cfg_scale": 1.0},
+        algo_cfg={
+            "noise_level": 0.7,
+            "sde_type": "sde",
+            "sde_window_size": window_size,
+            "sde_window_range": list(window_range),
+        },
+        encode_condition_fn=dummy_embeds,
+        prepare_initial_latents_fn=lambda b, seed: torch.randn(
+            b,
+            16,
+            4,
+            4,
+            generator=torch.Generator().manual_seed(seed) if seed is not None else None,
+        ),
+        device=torch.device("cpu"),
+        dtype=torch.float32,
+        forward_transformer_fn=lambda transformer, **kw: torch.zeros_like(
+            kw["hidden_states"]
+        ),
+    )
+
+
+def test_window_start_sampled_within_range_and_deterministic_per_seed():
+    adapter = _make_window_adapter()
+    starts = {adapter._sample_window_start(8, seed=s) for s in range(64)}
+    # range=[0,5), size=2 → 合法起点 {0,1,2,3}，64 个种子应覆盖不止一个起点
+    assert starts <= {0, 1, 2, 3}
+    assert len(starts) > 1
+    assert adapter._sample_window_start(8, seed=7) == adapter._sample_window_start(
+        8, seed=7
+    )
+
+
+def test_trajectory_carries_timestep_mask_matching_nonzero_logprobs():
+    adapter = _make_window_adapter()
+    traj = adapter.sample_trajectory(["a"], [" "], [{}], K=2, seed=3)
+    mask = traj["timestep_mask"]
+    assert mask.shape == traj["generation_logprobs"].shape  # [2, 8]
+    assert float(mask.sum(dim=1)[0].item()) == 2.0  # window_size
+    # 窗外 logprob 被置零，窗内不为零
+    assert torch.all(traj["generation_logprobs"][mask == 0] == 0)
+    assert torch.all(traj["generation_logprobs"][mask == 1] != 0)
 
 
 def test_pipeline_adapter_raises_when_encode_fn_missing():

@@ -154,7 +154,7 @@ class QwenImagePipelineAdapter:
         T = timesteps.shape[0]
         window_mask = compute_window_mask(
             T,
-            window_start=self._effective_window_start(T),
+            window_start=self._sample_window_start(T, seed),
             window_size=self._effective_window_size(T),
             device=self.device,
         )  # [T]
@@ -207,6 +207,7 @@ class QwenImagePipelineAdapter:
             "latents": latents_stacked,
             "timesteps": timesteps_stacked,
             "generation_logprobs": logprobs_stacked,
+            "timestep_mask": window_mask.unsqueeze(0).repeat(B, 1),
             "prompt_embeds": prompt_embeds,
             "prompt_embeds_mask": prompt_embeds_mask,
             "negative_prompt_embeds": negative_prompt_embeds,
@@ -374,11 +375,23 @@ class QwenImagePipelineAdapter:
         size = self.algo_cfg.get("sde_window_size")
         return size if size is not None else T
 
-    def _effective_window_start(self, T: int) -> int:
+    def _sample_window_start(self, T: int, seed: int | None) -> int:
+        """Uniformly sample the SDE window start within `sde_window_range`.
+
+        Matches verl-omni's per-rollout `torch.randint(range[0], range[1]-size+1)`.
+        Seeded with `seed + 2`: `seed` feeds the initial latents and `seed + 1`
+        the SDE noise, so this stream stays independent of both.
+        """
         rng = self.algo_cfg.get("sde_window_range")
         if rng is None:
             return 0
-        return int(rng[0])
+        size = self._effective_window_size(T) or T
+        lo = int(rng[0])
+        hi = min(int(rng[1]), T) - size
+        if hi <= lo:
+            return lo
+        gen = torch.Generator().manual_seed(seed + 2) if seed is not None else None
+        return int(torch.randint(lo, hi + 1, (1,), generator=gen).item())
 
     @staticmethod
     def _normalize_timestep(t: torch.Tensor | float) -> torch.Tensor:

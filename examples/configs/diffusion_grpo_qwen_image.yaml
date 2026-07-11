@@ -46,7 +46,7 @@ policy:
     noise_level: 0.7  # SDE noise magnitude inside the active window
     sde_type: "sde"  # "sde" (Flow-GRPO Gaussian logprob) or "cps" (simplified)
     sde_window_size: 6  # consecutive denoising steps in the policy gradient; null = all
-    sde_window_range: [0, 10]  # [start, end) envelope the window is sampled from; null = full
+    sde_window_range: [0, 10]  # window start is sampled uniformly from [start, end - size] each rollout; null = fixed at 0
 
   lora_cfg:
     enabled: true

@@ -133,6 +133,7 @@ class DiffusionTrajectorySpec(TypedDict):
     latents: torch.Tensor
     timesteps: torch.Tensor
     generation_logprobs: torch.Tensor
+    timestep_mask: torch.Tensor
     prompt_embeds: torch.Tensor
     prompt_embeds_mask: torch.Tensor
     negative_prompt_embeds: torch.Tensor

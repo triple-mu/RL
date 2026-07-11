@@ -48,7 +48,6 @@ from nemo_rl.models.diffusion.interfaces import (
     DiffusionTrajectorySpec,
 )
 from nemo_rl.models.diffusion.policy import DiffusionPolicy
-from nemo_rl.models.diffusion.sde import compute_window_mask
 from nemo_rl.utils.logger import Logger, LoggerConfig
 from nemo_rl.utils.timer import Timer
 
@@ -120,30 +119,16 @@ def _build_train_data(
     traj: DiffusionTrajectorySpec,
     advantages_per_sample: torch.Tensor,
     *,
-    policy_cfg: DiffusionPolicyConfig,
     loss_multiplier: torch.Tensor,
 ) -> BatchedDataDict[DiffusionTrainDataSpec]:
     T = traj["timesteps"].shape[-1]
-    gen_lp = traj["generation_logprobs"]
-    B = gen_lp.shape[0]
-    # None means "full window" for both knobs (see DiffusionAlgoCfg).
-    window_range = policy_cfg.algo.sde_window_range or [0, T]
-    timestep_mask_1d = compute_window_mask(
-        T,
-        window_start=int(window_range[0]),
-        window_size=int(policy_cfg.algo.sde_window_size or T),
-    )
-    # Always keep timestep_mask at [B, T] — the loss broadcasts to extra
-    # latent-token dims as needed (per-element mode produces [B, T, N, C]).
-    timestep_mask = timestep_mask_1d.unsqueeze(0).expand(B, -1)
     advantages = advantages_per_sample.unsqueeze(-1).expand(-1, T)
-
     data: DiffusionTrainDataSpec = {
         "latents": traj["latents"],
         "timesteps": traj["timesteps"],
         "generation_logprobs": traj["generation_logprobs"],
         "advantages": advantages,
-        "timestep_mask": timestep_mask,
+        "timestep_mask": traj["timestep_mask"],
         "sample_mask": loss_multiplier,
         "prompt_embeds": traj["prompt_embeds"],
         "prompt_embeds_mask": traj["prompt_embeds_mask"],
@@ -183,7 +168,6 @@ def diffusion_grpo_train(
     *,
     algo_cfg: DiffusionGRPOAlgoConfig,
     loss_cfg: DiffusionLossConfig,
-    policy_cfg: DiffusionPolicyConfig,
     logger: Logger,
     checkpoint_dir: str | None,
     save_period: int = 0,
@@ -277,7 +261,6 @@ def diffusion_grpo_train(
         train_data = _build_train_data(
             traj,
             advantages_per_sample,
-            policy_cfg=policy_cfg,
             loss_multiplier=loss_mult,
         )
 

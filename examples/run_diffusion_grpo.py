@@ -140,7 +140,6 @@ def main() -> None:
             val_dataloader=val_loader,
             algo_cfg=master.grpo,
             loss_cfg=master.loss_fn,
-            policy_cfg=master.policy,
             logger=logger,
             checkpoint_dir=master.checkpointing.checkpoint_dir
             if master.checkpointing.enabled
