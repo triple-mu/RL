@@ -58,6 +58,7 @@ class DiffusionOptimizerCfg(BaseModel, extra="allow"):
     lr: float = 1.0e-5
     weight_decay: float = 0.0
     betas: tuple[float, float] = (0.9, 0.999)
+    max_grad_norm: float = 1.0
 
 
 class DiffusionPolicyConfig(BaseModel, extra="allow"):

@@ -55,6 +55,26 @@ def build_no_adapter_forward(transformer: Any, forward_fn: Any) -> Any:
     return forward
 
 
+def accumulate_metrics(
+    acc: dict[str, float], metrics: dict[str, Any], weight: float
+) -> None:
+    """Fold one micro-batch's loss metrics into `acc`.
+
+    Extremum metrics take min/max across chunks; everything else is a
+    sample-count-weighted mean (weights over all chunks sum to 1).
+    """
+    import torch
+
+    for k, v in metrics.items():
+        v = float(v.item()) if torch.is_tensor(v) else float(v)
+        if k == "ratio_min":
+            acc[k] = min(acc.get(k, float("inf")), v)
+        elif k == "ratio_max":
+            acc[k] = max(acc.get(k, float("-inf")), v)
+        else:
+            acc[k] = acc.get(k, 0.0) + v * weight
+
+
 @ray.remote
 class DiffusionPolicyWorker:  # pragma: no cover
     """Ray actor owning one Qwen-Image pipeline + LoRA optimizer."""
@@ -492,9 +512,7 @@ class DiffusionPolicyWorker:  # pragma: no cover
             )
             (loss * weight).backward()
             loss_acc += float(loss.detach().item()) * weight
-            for k, v in metrics.items():
-                v = float(v.item()) if torch.is_tensor(v) else float(v)
-                metrics_acc[k] = metrics_acc.get(k, 0.0) + v * weight
+            accumulate_metrics(metrics_acc, metrics, weight)
         if self.world_size > 1 and torch.distributed.is_initialized():
             # Data-parallel: average trainable grads across ranks so every
             # optimizer step applies the identical global update.
@@ -503,12 +521,17 @@ class DiffusionPolicyWorker:  # pragma: no cover
                     torch.distributed.all_reduce(
                         p.grad, op=torch.distributed.ReduceOp.AVG
                     )
-        torch.nn.utils.clip_grad_norm_(
+        grad_norm = torch.nn.utils.clip_grad_norm_(
             (p for p in self.transformer.parameters() if p.requires_grad),
-            max_norm=1.0,
+            max_norm=float(self.config["optimizer"]["max_grad_norm"]),
         )
         self.optimizer.step()
-        return {"loss": loss_acc, **metrics_acc}
+        return {
+            "loss": loss_acc,
+            "grad_norm": float(grad_norm.item()),
+            "lr": float(self.optimizer.param_groups[0]["lr"]),
+            **metrics_acc,
+        }
 
     def report_trainable_checksum(self) -> float:
         """Sum of all trainable params — DP ranks must agree after each step."""

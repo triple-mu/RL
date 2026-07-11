@@ -45,6 +45,27 @@ from nemo_rl.models.diffusion.interfaces import (
 )
 
 
+def aggregate_worker_metrics(
+    per_worker: list[dict[str, float]],
+) -> dict[str, float]:
+    """Reduce per-DP-worker train metrics into one dict.
+
+    `ratio_min`/`ratio_max` take min/max across workers; every other key is
+    averaged over the workers that reported it.
+    """
+    keys = set().union(*(d.keys() for d in per_worker))
+    out: dict[str, float] = {}
+    for k in keys:
+        vals = [d[k] for d in per_worker if k in d]
+        if k == "ratio_min":
+            out[k] = min(vals)
+        elif k == "ratio_max":
+            out[k] = max(vals)
+        else:
+            out[k] = sum(vals) / len(vals)
+    return out
+
+
 class DiffusionPolicy:
     """Controller-side facade around a Ray pool of diffusion workers."""
 
@@ -202,10 +223,7 @@ class DiffusionPolicy:
                 for i, w in enumerate(self.worker_group.workers)
             ]
             per_worker = ray.get(futures)
-        keys = set().union(*(d.keys() for d in per_worker))
-        return {
-            k: sum(d.get(k, 0.0) for d in per_worker) / len(per_worker) for k in keys
-        }
+        return aggregate_worker_metrics(per_worker)
 
     def trainable_checksums(self) -> list[float]:
         """Per-worker trainable-param checksums; DP ranks must agree."""
