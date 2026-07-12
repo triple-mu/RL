@@ -199,6 +199,13 @@ class DiffusionPolicyWorker:  # pragma: no cover
                 p.requires_grad_(False)
             module.eval()
 
+        # Decode one sample at a time inside the VAE: rollout batches decode
+        # up to (num_prompts_per_step / dp) * K images at once, which OOMs in
+        # the fp32 upsampling path without slicing (mirrors verl-omni's
+        # use_slicing=True).
+        if hasattr(self.vae, "enable_slicing"):
+            self.vae.enable_slicing()
+
         # QwenImageTransformer2DModel gates on `torch.is_grad_enabled() and
         # self.gradient_checkpointing`, so this is a no-op during no_grad
         # rollout and only recomputes activations in the training recompute.
