@@ -112,8 +112,15 @@ def _compute_advantages(
     rewards: torch.Tensor,
     *,
     use_leave_one_out_baseline: bool = True,
+    use_global_std: bool = True,
 ) -> torch.Tensor:
-    """Group-relative advantage per the GRPO recipe."""
+    """Group-relative advantage per the GRPO recipe.
+
+    ``use_global_std=True`` normalizes by the whole-batch reward std
+    (verl-omni ``global_std`` semantics): with sparse rewards most groups are
+    near-constant, and per-group std amplifies the few informative groups to
+    the advantage clamp, destabilizing training.
+    """
     prompt_ids = _prompt_ids_for_baseline(rep_prompts)
     valid_mask = torch.ones_like(rewards)
     baseline, std = calculate_baseline_and_std_per_prompt(
@@ -122,6 +129,8 @@ def _compute_advantages(
         valid_mask=valid_mask,
         leave_one_out_baseline=use_leave_one_out_baseline,
     )
+    if use_global_std:
+        return (rewards - baseline) / (rewards.std() + 1e-4)
     return (rewards - baseline) / std.clamp_min(1e-6)
 
 
@@ -277,6 +286,7 @@ def diffusion_grpo_train(
                 traj["prompts"],
                 rewards,
                 use_leave_one_out_baseline=algo_cfg.use_leave_one_out_baseline,
+                use_global_std=algo_cfg.use_global_std,
             )
 
         if traj["metadata"]:

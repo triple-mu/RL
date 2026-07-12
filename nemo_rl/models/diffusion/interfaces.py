@@ -111,6 +111,10 @@ class DiffusionGRPOAlgoConfig(BaseModel, extra="allow"):
     # 0 validates on the full val dataloader.
     max_val_samples: int = 0
     use_leave_one_out_baseline: bool = True
+    # Normalize advantages by the whole-batch reward std (verl-omni
+    # `global_std`) instead of per-group std, which explodes on
+    # near-constant groups under sparse rewards.
+    use_global_std: bool = True
     val_generation: DiffusionValGenerationCfg = Field(
         default_factory=DiffusionValGenerationCfg
     )

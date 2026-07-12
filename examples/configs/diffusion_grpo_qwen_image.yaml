@@ -10,6 +10,7 @@ grpo:
   val_period: 50  # validate every N steps; 0 disables periodic validation
   seed: 42
   use_leave_one_out_baseline: true
+  use_global_std: true  # normalize by whole-batch reward std, not per-group std
   val_generation:
     num_inference_steps: 40  # validation samples with deterministic ODE at this step count
 

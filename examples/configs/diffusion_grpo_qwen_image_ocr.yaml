@@ -10,6 +10,7 @@ grpo:
   val_at_start: true
   seed: 42
   use_leave_one_out_baseline: true
+  use_global_std: true  # whole-batch reward std (verl-omni `global_std`); per-group std explodes on near-constant OCR groups
   val_generation:
     num_inference_steps: 40  # deterministic ODE eval (training rollout uses 10)
 

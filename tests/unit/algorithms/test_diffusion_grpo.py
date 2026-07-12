@@ -153,3 +153,20 @@ def test_build_train_data_slices_to_window_columns():
     assert out["timesteps"][1].tolist() == [4.0, 5.0, 6.0]
     # Latents keep one extra column (w + 1): sample 1 must equal the original latents[1, 4:8].
     assert torch.equal(out["latents"][1], traj["latents"][1, 4:8])
+
+
+def test_global_std_tames_constant_group_amplification():
+    import torch
+
+    from nemo_rl.algorithms.diffusion_grpo import _compute_advantages
+
+    # 组 a 全常数（OCR 常见），组 b 有微小信号
+    prompts = ["a"] * 4 + ["b"] * 4
+    rewards = torch.tensor([0.5, 0.5, 0.5, 0.5, 0.0, 0.02, 0.0, 0.0])
+    adv_group = _compute_advantages(prompts, rewards, use_global_std=False)
+    adv_global = _compute_advantages(prompts, rewards, use_global_std=True)
+    # 组内 std 归一会把组 b 的微小差异放大到远超全局归一的幅度
+    assert adv_group.abs().max() > 10 * adv_global.abs().max()
+    # 全局归一下常数组 advantage 为 0，且整体幅度有界、无爆炸
+    assert torch.all(adv_global[:4].abs() < 1e-3)
+    assert adv_global.abs().max() < 5.0
