@@ -210,6 +210,8 @@ def test_flow_match_scheduler_contract():
     `FlowMatchEulerDiscreteScheduler` exposes `timesteps` (1-D), `sigmas`
     (1-D with a terminal sentinel entry) and `index_for_timestep(t) -> int`.
     """
+    pytest.importorskip("diffusers")
+
     import numpy as np
     from diffusers import FlowMatchEulerDiscreteScheduler
 

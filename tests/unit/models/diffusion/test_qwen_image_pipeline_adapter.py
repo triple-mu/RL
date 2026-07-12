@@ -286,6 +286,8 @@ def test_parity_bf16_within_loose_tolerance(dtype: torch.dtype):
 
 
 def _make_window_adapter(num_steps=8, window_size=2, window_range=(0, 5)):
+    pytest.importorskip("diffusers")
+
     from diffusers import FlowMatchEulerDiscreteScheduler
 
     from nemo_rl.models.diffusion.pipeline import QwenImagePipelineAdapter
