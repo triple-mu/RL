@@ -28,11 +28,11 @@ Plugin contract (:class:`BaseImageReward`):
 """
 
 import hashlib
-from typing import Any, Callable, Protocol
+from typing import Annotated, Any, Callable, Protocol
 
 import ray
 import torch
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class ImageRewardPluginSpec(BaseModel, extra="allow"):
@@ -49,7 +49,7 @@ class ImageRewardEnvConfig(BaseModel, extra="allow"):
     num_cpus_per_worker: int = 2
     num_gpus_per_worker: float = 0.0
     # Reward actor replicas per plugin; raise for slow rewards (e.g. OCR).
-    num_workers_per_plugin: int = 1
+    num_workers_per_plugin: Annotated[int, Field(ge=1)] = 1
 
 
 class BaseImageReward(Protocol):

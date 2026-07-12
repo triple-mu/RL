@@ -14,14 +14,21 @@
 import pytest
 import ray
 import torch
+from pydantic import ValidationError
 
 from nemo_rl.environments.image_reward_environment import (
     _PLUGIN_REGISTRY,
     DummyImageReward,
+    ImageRewardEnvConfig,
     ImageRewardEnvironment,
     PickScoreReward,
     register_image_reward,
 )
+
+
+def test_env_config_rejects_zero_workers_per_plugin():
+    with pytest.raises(ValidationError):
+        ImageRewardEnvConfig(plugins=[{"name": "dummy"}], num_workers_per_plugin=0)
 
 
 def test_dummy_image_reward_is_deterministic():
@@ -116,10 +123,11 @@ def test_sharded_reward_pool_matches_single_worker(ray_init_and_shutdown):  # no
         {
             "plugins": [{"name": "dummy"}],
             "num_cpus_per_worker": 1,
-            "num_workers_per_plugin": 4,  # 6 图 → 4 个 replica 不均匀分片
+            "num_workers_per_plugin": 4,  # 6 images over 4 replicas: uneven sharding
         }
     )
-    # extra="allow" 会吞掉未实现的字段，仅比对分数会假绿；先断言 replica 数
+    # extra="allow" swallows unimplemented fields, so comparing scores alone
+    # could pass spuriously; assert the replica count first.
     assert env2._replicas_per_plugin == 4
     r1, _ = env1.score_images(images, prompts, meta)
     r2, _ = env2.score_images(images, prompts, meta)
@@ -195,11 +203,15 @@ def test_pickscore_rejects_size_mismatch():
 def test_ocr_edit_distance_score_semantics():
     from nemo_rl.environments.image_reward_environment import ocr_edit_distance_score
 
-    assert ocr_edit_distance_score("Hello World", "hello world") == 1.0  # 归一后精确
-    assert ocr_edit_distance_score("xx helloworld yy", "Hello World") == 1.0  # 子串命中
-    assert ocr_edit_distance_score("helxo", "hello") == 1.0 - 1 / 5  # 1 次编辑
-    assert ocr_edit_distance_score("", "hello") == 0.0  # 距离封顶 len(gt)
-    assert ocr_edit_distance_score("anything", "") == 0.0  # 空 gt 记 0
+    assert (
+        ocr_edit_distance_score("Hello World", "hello world") == 1.0
+    )  # exact after normalization
+    assert (
+        ocr_edit_distance_score("xx helloworld yy", "Hello World") == 1.0
+    )  # substring hit
+    assert ocr_edit_distance_score("helxo", "hello") == 1.0 - 1 / 5  # one edit
+    assert ocr_edit_distance_score("", "hello") == 0.0  # distance capped at len(gt)
+    assert ocr_edit_distance_score("anything", "") == 0.0  # empty gt scores 0
 
 
 def test_ocr_reward_plugin_with_injected_engine():
@@ -214,7 +226,7 @@ def test_ocr_reward_plugin_with_injected_engine():
         ["p1", "p2"],
         [{"ground_truth": "hello"}, {"ground_truth": "help"}],
     )
-    assert out["ocr"].tolist() == [1.0, 1.0 - 2 / 4]  # hello→help 距离 2
+    assert out["ocr"].tolist() == [1.0, 1.0 - 2 / 4]  # hello -> help is distance 2
 
 
 @pytest.fixture

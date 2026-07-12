@@ -14,8 +14,8 @@ grpo:
     num_inference_steps: 40  # validation samples with deterministic ODE at this step count
 
 loss_fn:
-  ratio_clip_min: 0.2  # PPO clip lower bound (ratio clipped to [1-min, 1+max])
-  ratio_clip_max: 0.2
+  ratio_clip_min: 1.0e-4  # PPO clip for window-mode rollouts (large clips destabilize windowed training)
+  ratio_clip_max: 1.0e-4
   adv_clip_max: 5.0  # advantages clamped to ±this before the ratio product
   beta: 0.0  # Gaussian-mean KL coefficient vs the reference policy; 0 disables KL
 

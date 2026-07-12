@@ -125,8 +125,8 @@ def test_build_train_data_slices_to_window_columns():
 
     B, T, w = 2, 8, 3
     mask = torch.zeros(B, T)
-    mask[0, 1 : 1 + w] = 1.0  # 样本 0 窗口 [1,4)
-    mask[1, 4 : 4 + w] = 1.0  # 样本 1 窗口 [4,7)
+    mask[0, 1 : 1 + w] = 1.0  # sample 0 window [1, 4)
+    mask[1, 4 : 4 + w] = 1.0  # sample 1 window [4, 7)
     traj = {
         "latents": torch.arange(B * (T + 1) * 4, dtype=torch.float32).reshape(
             B, T + 1, 4
@@ -149,7 +149,7 @@ def test_build_train_data_slices_to_window_columns():
     assert out["timesteps"].shape == (B, w)
     assert out["latents"].shape == (B, w + 1, 4)
     assert torch.all(out["timestep_mask"] == 1)
-    # 样本 1 的窗口起点是 4 → 切片后 timesteps 应为 [4, 5, 6]
+    # Sample 1's window starts at 4, so the sliced timesteps must be [4, 5, 6].
     assert out["timesteps"][1].tolist() == [4.0, 5.0, 6.0]
-    # latents 多取一列（w+1）：样本 1 应为原 latents[1, 4:8]
+    # Latents keep one extra column (w + 1): sample 1 must equal the original latents[1, 4:8].
     assert torch.equal(out["latents"][1], traj["latents"][1, 4:8])

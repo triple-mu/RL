@@ -329,7 +329,7 @@ def _make_window_adapter(num_steps=8, window_size=2, window_range=(0, 5)):
 def test_window_start_sampled_within_range_and_deterministic_per_seed():
     adapter = _make_window_adapter()
     starts = {adapter._sample_window_start(8, seed=s) for s in range(64)}
-    # range=[0,5), size=2 → 合法起点 {0,1,2,3}，64 个种子应覆盖不止一个起点
+    # range=[0, 5), size=2 gives valid starts {0, 1, 2, 3}; 64 seeds should hit more than one
     assert starts <= {0, 1, 2, 3}
     assert len(starts) > 1
     assert adapter._sample_window_start(8, seed=7) == adapter._sample_window_start(
@@ -343,7 +343,7 @@ def test_trajectory_carries_timestep_mask_matching_nonzero_logprobs():
     mask = traj["timestep_mask"]
     assert mask.shape == traj["generation_logprobs"].shape  # [2, 8]
     assert float(mask.sum(dim=1)[0].item()) == 2.0  # window_size
-    # 窗外 logprob 被置零，窗内不为零
+    # Out-of-window logprobs are zeroed; in-window ones are nonzero.
     assert torch.all(traj["generation_logprobs"][mask == 0] == 0)
     assert torch.all(traj["generation_logprobs"][mask == 1] != 0)
 
@@ -373,21 +373,21 @@ def test_build_no_adapter_forward_disables_adapter_and_matches_call_convention()
 
     def forward_fn(transformer, **kwargs):
         assert transformer is model
-        assert transformer.adapter_disabled  # 必须在 disable 上下文内
+        assert transformer.adapter_disabled  # must run inside the disable context
         calls.append(kwargs)
         return kwargs["hidden_states"] * 0
 
     fwd = build_no_adapter_forward(model, forward_fn)
     x = torch.ones(2, 3)
-    # pipeline._denoise_step 的调用约定：不带 transformer 位置参数
+    # pipeline._denoise_step's calling convention: no positional transformer argument
     out = fwd(hidden_states=x, timestep=torch.tensor([1.0]))
     assert torch.equal(out, torch.zeros(2, 3))
     assert calls and "timestep" in calls[0]
-    assert not model.adapter_disabled  # 上下文退出后恢复
+    assert not model.adapter_disabled  # restored after the context exits
 
 
 def test_reference_path_yields_zero_kl_when_ref_equals_policy():
-    adapter = _make_window_adapter()  # Task 1 的 helper
+    adapter = _make_window_adapter()  # helper shared with the window tests
     traj = adapter.sample_trajectory(["a"], [" "], [{}], K=2, seed=3)
     data = {
         "latents": traj["latents"],
@@ -397,7 +397,7 @@ def test_reference_path_yields_zero_kl_when_ref_equals_policy():
         "negative_prompt_embeds": traj["negative_prompt_embeds"],
         "negative_prompt_embeds_mask": traj["negative_prompt_embeds_mask"],
     }
-    # reference forward = 同一个 forward（模拟 LoRA 零增量的初始状态）
+    # reference forward = the same forward (mimics the initial state where LoRA deltas are zero)
     curr, means, stds, refs = adapter.compute_transition_logprob(
         data,
         use_reference=True,

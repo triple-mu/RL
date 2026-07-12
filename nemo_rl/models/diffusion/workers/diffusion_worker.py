@@ -422,7 +422,7 @@ class DiffusionPolicyWorker:  # pragma: no cover
         val_steps = int(generation_overrides.get("num_inference_steps", train_steps))
         saved_algo = self.adapter.algo_cfg
         self._set_scheduler_timesteps(val_steps)
-        # 纯 ODE：窗口置空 → 每步 stochastic=False，logprob 全 0
+        # Pure ODE: an empty window makes every step stochastic=False, so all logprobs are 0.
         self.adapter.algo_cfg = {
             **self.config["algo"],
             "sde_window_size": 0,

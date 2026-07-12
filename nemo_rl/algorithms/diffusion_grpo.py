@@ -132,8 +132,9 @@ def _build_train_data(
     loss_multiplier: torch.Tensor,
 ) -> BatchedDataDict[DiffusionTrainDataSpec]:
     T = traj["timesteps"].shape[-1]
-    # 只保留 SDE 窗口内的列，训练侧 recompute 不再对窗外步做 forward。
-    # 各样本窗口起点可不同（per-worker 采样），但宽度必须一致。
+    # Keep only the columns inside the SDE window so the training-side
+    # recompute never forwards out-of-window steps. Window starts may differ
+    # per sample (sampled per worker), but the widths must match.
     mask = traj["timestep_mask"]
     widths = mask.sum(dim=1).long()
     w = int(widths.max().item())
@@ -141,7 +142,7 @@ def _build_train_data(
         assert torch.all(widths == w), (
             f"mixed window widths in one batch: {widths.tolist()}"
         )
-        starts = mask.argmax(dim=1)  # 每行第一个 1
+        starts = mask.argmax(dim=1)  # first 1 in each row
         cols = starts.unsqueeze(1) + torch.arange(w, device=mask.device)
         cols_lat = starts.unsqueeze(1) + torch.arange(w + 1, device=mask.device)
 
@@ -149,7 +150,7 @@ def _build_train_data(
             flat = idx.view(idx.shape[0], idx.shape[1], *([1] * (x.ndim - 2)))
             return torch.gather(x, 1, flat.expand(-1, -1, *x.shape[2:]))
 
-        traj = traj.copy()  # 不改调用方持有的 trajectory
+        traj = traj.copy()  # do not mutate the caller's trajectory
         traj["latents"] = take(traj["latents"], cols_lat)
         traj["timesteps"] = torch.gather(traj["timesteps"], 1, cols)
         traj["generation_logprobs"] = torch.gather(traj["generation_logprobs"], 1, cols)

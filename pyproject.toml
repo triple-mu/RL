@@ -205,7 +205,7 @@ nemo_gym = ["nemo_gym"]
 diffusion = [
   "diffusers>=0.37",
   "peft>=0.19",
-  # OCR reward（CPU 推理；GPU 需自行换 paddlepaddle-gpu）
+  # OCR reward (CPU inference; swap in paddlepaddle-gpu for GPU scoring)
   "paddleocr>=2.9,<3.0",
   "paddlepaddle>=2.6",
 ]

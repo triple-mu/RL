@@ -14,12 +14,13 @@
 """Export the Flow-GRPO OCR dataset as diffusion-GRPO prompt jsonl files.
 
 Source: https://github.com/yifan123/flow_grpo/tree/main/dataset/ocr
-(train.txt 19,652 lines / test.txt 1,017 lines). The quoted text in each
-prompt is the OCR ground truth, stored in metadata for the "ocr" reward.
+(19,653 train / 1,018 val prompts; the upstream txt files lack a trailing
+newline, so wc -l reports one fewer). The quoted text in each prompt is the
+OCR ground truth, stored in metadata for the "ocr" reward.
 
 Usage:
   uv run python tools/export_ocr_prompts.py --out-dir examples/data/diffusion/ocr
-  # 或使用本地 flow_grpo checkout：
+  # or use a local flow_grpo checkout:
   uv run python tools/export_ocr_prompts.py --source-dir /path/to/flow_grpo/dataset/ocr --out-dir ...
 """
 

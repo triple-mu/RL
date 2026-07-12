@@ -42,7 +42,7 @@ if [[ $(jq 'to_entries | .[] | select(.key == "train/loss") | .value | keys | ma
     uv run tests/check_metrics.py $JSON_METRICS \
         "median(data['train/mean_ratio']) > 0.5" \
         "median(data['train/mean_ratio']) < 1.5" \
-        "data['val/reward_mean']['59'] > data['val/reward_mean']['0'] + 0.05" \
+        "data['val/reward_mean']['$LAST_STEP'] > data['val/reward_mean']['0'] + 0.05" \
         "max(data['train/grad_norm']) < 100"
 
     # Clean up checkpoint directory after successful run to save space.
