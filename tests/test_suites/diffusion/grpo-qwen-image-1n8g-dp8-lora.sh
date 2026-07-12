@@ -22,7 +22,7 @@ if [[ ! -f examples/data/diffusion/train_prompts.jsonl ]]; then
     --train-size 4000 --val-size 64 --out-dir examples/data/diffusion
 fi
 
-uv run examples/run_diffusion_grpo.py \
+uv run --extra diffusion examples/run_diffusion_grpo.py \
     --config $CONFIG_PATH \
     grpo.max_num_steps=$MAX_STEPS \
     logger.log_dir=$LOG_DIR \

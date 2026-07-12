@@ -20,7 +20,7 @@ if [[ ! -f examples/data/diffusion/ocr/train_prompts.jsonl ]]; then
   uv run python tools/export_ocr_prompts.py --out-dir examples/data/diffusion/ocr
 fi
 
-uv run examples/run_diffusion_grpo.py \
+uv run --extra diffusion examples/run_diffusion_grpo.py \
     --config $CONFIG_PATH \
     grpo.max_num_steps=$MAX_STEPS \
     logger.log_dir=$LOG_DIR \

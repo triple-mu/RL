@@ -30,7 +30,6 @@ PATH="$HOME/.local/bin:$PATH" uv run --frozen --extra diffusion python \
   --config examples/configs/diffusion_grpo_qwen_image_tiny_jpeg.yaml \
   logger.log_dir="$LOG_DIR" \
   logger.tensorboard_enabled=True \
-  "+logger.tensorboard={}" \
   checkpointing.checkpoint_dir="$CKPT_DIR" \
   2>&1 | tee "$LOG_DIR/run.log"
 
