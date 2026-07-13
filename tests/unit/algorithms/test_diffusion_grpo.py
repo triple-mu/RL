@@ -54,7 +54,7 @@ def test_master_config_rejects_kl_with_full_param():
     from nemo_rl.utils.config import load_config
 
     cfg = OmegaConf.to_container(
-        load_config("examples/configs/diffusion_grpo_qwen_image_tiny.yaml"),
+        load_config("examples/configs/diffusion_grpo_qwen_image_ocr.yaml"),
         resolve=True,
     )
     cfg["loss_fn"]["beta"] = 0.04

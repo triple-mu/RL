@@ -46,7 +46,7 @@ def parse_args() -> tuple[argparse.Namespace, list[str]]:
         "--config",
         type=str,
         default=None,
-        help="Path to YAML config (default: examples/configs/diffusion_grpo_qwen_image_tiny.yaml)",
+        help="Path to YAML config (default: examples/configs/diffusion_grpo_qwen_image_ocr.yaml)",
     )
     return parser.parse_known_args()
 
@@ -58,7 +58,7 @@ def main() -> None:
         args.config = os.path.join(
             os.path.dirname(__file__),
             "configs",
-            "diffusion_grpo_qwen_image_tiny.yaml",
+            "diffusion_grpo_qwen_image_ocr.yaml",
         )
 
     cfg = load_config(args.config)

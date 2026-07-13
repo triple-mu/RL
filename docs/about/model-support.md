@@ -32,4 +32,4 @@ In addition, please refer to our [performance page](https://docs.nvidia.com/nemo
 
 ## Diffusion models via [Hugging Face Diffusers](https://github.com/huggingface/diffusers) (experimental)
 
-- **Qwen**: [Qwen-Image](https://huggingface.co/Qwen/Qwen-Image) — Flow-GRPO text-to-image training, see the [Diffusion GRPO guide](../guides/diffusion-grpo.md)
+- **Qwen**: [Qwen-Image](https://huggingface.co/Qwen/Qwen-Image) — Flow-GRPO text-to-image training
