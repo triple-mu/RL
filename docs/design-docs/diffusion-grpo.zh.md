@@ -473,7 +473,7 @@ total reward，并输出各 component 的 mean 指标。GPU/CPU 放置由
 - nightly 三件套：`examples/configs/recipes/diffusion/` recipe +
   `tests/test_suites/diffusion/` driver + `tests/test_suites/nightly.txt` 条目
   （真实模型多卡 DP + PickScore 短程训练，断言 `mean_ratio ≈ 1` 且末步 loss 有界）。
-- 单卡 shell smoke：`tests/functional/diffusion_grpo_smoke.sh`（tiny 模型数步训练 +
+- 单卡 shell 功能测试：`tests/functional/diffusion_grpo.sh`（tiny 模型数步训练 +
   checkpoint 产物断言）。
 - DP 正确性：多卡 smoke 观察 `train/dp_checksum_spread` 恒为 0。
 
