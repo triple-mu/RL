@@ -61,7 +61,7 @@ policy:
 
 data:
   train:
-    prompt_file: "examples/data/diffusion/jpeg_smoke_prompts.txt"
+    prompt_file: "examples/data/diffusion/jpeg_prompts.txt"
 
 env:
   image_reward:

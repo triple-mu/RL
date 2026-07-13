@@ -273,7 +273,7 @@ def diffusion_grpo_train(
             )
 
         with timer.time("reward"):
-            # The reward pool is CPU by default in the smoke config; move
+            # The reward pool is CPU by default in the tiny configs; move
             # the GPU-side images to CPU before the Ray hop to keep CUDA
             # tensors local to the trainer worker.
             images_cpu = traj["images"].detach().to("cpu")
@@ -340,7 +340,7 @@ def diffusion_grpo_train(
                 metrics[f"timing/{tag}_s"] = dur
         timer.reset()
         logger.log_metrics(metrics, step=step)
-        # Console echo so smoke + interactive runs always have observable
+        # Console echo so sanity + interactive runs always have observable
         # progress even when every logger backend is disabled. Report both
         # the final-epoch loss (signal under our reporting convention) and
         # the average-across-inner-epochs loss (matches verl-omni's console

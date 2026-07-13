@@ -75,7 +75,7 @@ env:
     # PickScore (CLIP-H preference model, ~4GB download on first use) scored on
     # CPU workers. To score on a GPU instead, reserve one by lowering
     # cluster.gpus_per_node and set num_gpus_per_worker: 1.0 (see the h200
-    # config). The "dummy" plugin is CPU-only and deterministic — smoke only.
+    # config). The "dummy" plugin is CPU-only and deterministic — tests only.
     plugins:
       - name: "pickscore"
         weight: 1.0

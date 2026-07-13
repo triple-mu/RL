@@ -67,7 +67,7 @@ class BaseImageReward(Protocol):
 class DummyImageReward:
     """Deterministic reward derived from prompt hash and the per-image mean.
 
-    The deterministic property is important for the smoke test: replaying the
+    The deterministic property is important for the functional test: replaying the
     same prompts on the same generated tensors must give the same reward, so
     we can detect rollout-level non-determinism without entangling it with
     reward noise.

@@ -90,7 +90,7 @@ class DiffusionPolicy:
         )
 
     # ------------------------------------------------------------------
-    # Forward to worker(s) — single-worker smoke path
+    # Forward to worker(s) — single-worker path
     # ------------------------------------------------------------------
     def _call_all(self, method_name: str, **kwargs) -> list:
         """Invoke a method on every worker; return list of results (ray.get).

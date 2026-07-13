@@ -58,14 +58,14 @@ Diffusion dependencies (diffusers, peft, paddleocr) live behind the optional
 `diffusion` extra: use `uv run --extra diffusion ...` (or `uv sync --extra
 diffusion` once).
 
-### Single-GPU smoke (~16 GB)
+### Single-GPU functional test (~16 GB)
 
 ```bash
-bash tests/functional/diffusion_grpo_smoke.sh
+bash tests/functional/diffusion_grpo.sh
 ```
 
-The smoke driver runs 5 training steps of `tiny-random/Qwen-Image` with the
-`jpeg_compressibility` reward (a real, optimizable signal), configured by
+The functional test runs 5 training steps of `tiny-random/Qwen-Image` with the
+`jpeg_compressibility` reward (a real, optimizable signal), mirroring
 [`examples/configs/diffusion_grpo_qwen_image_tiny_jpeg.yaml`](../../examples/configs/diffusion_grpo_qwen_image_tiny_jpeg.yaml),
 then asserts metric health via `tests/check_metrics.py` (ratio window, bounded
 grad norm, checkpoint written). It is wired into the L1 functional CI suite.
@@ -127,7 +127,7 @@ Two export tools generate these files:
 
 | Plugin | Signal | Dependencies |
 |---|---|---|
-| `dummy` | deterministic (prompt hash + image mean); smoke/unit tests only | none |
+| `dummy` | deterministic (prompt hash + image mean); unit/functional tests only | none |
 | `jpeg_compressibility` | rule-based `-jpeg_kb/500` | none |
 | `pickscore` | PickScore_v1 CLIP-H preference model (~4 GB download on first use; transformers 4.x and 5.x) | transformers |
 | `ocr` | PaddleOCR (en) + edit distance vs `metadata["ground_truth"]`: substring hit → 1.0, else `1 - dist/len(gt)` | paddleocr 2.x via the `diffusion` extra |
@@ -280,7 +280,7 @@ uv run --frozen --extra diffusion python examples/run_diffusion_grpo.py \
     policy.train_micro_batch_size=null
 ```
 
-Measured on an H200, the smoke config yields `train/mean_ratio` = 0.99996. Any
+Measured on an H200, the tiny jpeg config yields `train/mean_ratio` = 0.99996. Any
 real deviation from 1 means the sampling path and the training recompute path
 have numerically diverged (scheduler indexing, dtype, CFG, or window handling)
 — the classic Flow-GRPO failure mode, cf. flow_grpo issues
@@ -293,8 +293,8 @@ around.
 ### L0-b: fake-reward overfit
 
 `jpeg_compressibility` is a trivially optimizable reward. On the tiny + jpeg
-smoke config (`bash tests/functional/diffusion_grpo_smoke.sh`),
-`train/reward_mean` must visibly rise within the 5 smoke steps. If the ratio
+config (`bash tests/functional/diffusion_grpo.sh`),
+`train/reward_mean` must visibly rise within the 5 training steps. If the ratio
 check passes but a fake reward does not go up, the optimization plumbing
 (advantages, masking, optimizer wiring) is broken — do not proceed to real
 rewards.

@@ -1,4 +1,4 @@
-# Diffusion-GRPO smoke configuration for a single 16 GB GPU (e.g. 3080 Ti).
+# Diffusion-GRPO sanity-run configuration for a single 16 GB GPU (e.g. 3080 Ti).
 # Uses `tiny-random/Qwen-Image` so the full pipeline can be downloaded in
 # minutes and the trainable LoRA fits in <4 GB VRAM with K=2, T=8.
 
@@ -18,7 +18,7 @@ loss_fn:
 
 checkpointing:
   enabled: true
-  checkpoint_dir: "results/diffusion_grpo_smoke"
+  checkpoint_dir: "results/diffusion_grpo_tiny"
   save_period: 5
 
 policy:
@@ -57,7 +57,7 @@ policy:
 
 data:
   train:
-    prompt_file: "examples/data/diffusion/smoke_prompts.txt"
+    prompt_file: "examples/data/diffusion/dev_prompts.txt"
 
 env:
   image_reward:
@@ -72,7 +72,7 @@ cluster:
   num_nodes: 1
 
 logger:
-  log_dir: "logs/diffusion_grpo_smoke"
+  log_dir: "logs/diffusion_grpo_tiny"
   wandb_enabled: false
   tensorboard_enabled: false
   tensorboard: {}

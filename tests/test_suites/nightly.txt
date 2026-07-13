@@ -163,9 +163,6 @@ tests/test_suites/llm/prorlv2-qwen2.5-math-1.5b-instruct-1n8g-fsdp2tp1.v2-tq_moo
 # Diffusion #
 #############
 
-# Qwen-Image flow-GRPO LoRA (PickScore reward, single-node 8-GPU DP)
-tests/test_suites/diffusion/grpo-qwen-image-1n8g-dp8-lora.sh
-
 # Qwen-Image flow-GRPO LoRA on the Flow-GRPO OCR task (PaddleOCR reward, single-node 8-GPU DP)
 tests/test_suites/diffusion/grpo-qwen-image-ocr-1n8g-dp8-lora.sh
 
