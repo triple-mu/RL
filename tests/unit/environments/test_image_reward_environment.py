@@ -229,6 +229,41 @@ def test_ocr_reward_plugin_with_injected_engine():
     assert out["ocr"].tolist() == [1.0, 1.0 - 2 / 4]  # hello -> help is distance 2
 
 
+def test_ocr_default_engine_constructed_under_init_lock(monkeypatch, tmp_path):
+    """Concurrent replicas race on the ~/.paddleocr model download; the default
+    engine must be constructed while holding the exclusive init file lock."""
+    import fcntl
+    import sys
+    import types
+
+    from nemo_rl.environments.image_reward_environment import OcrEditDistanceReward
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    lock_path = tmp_path / ".paddleocr" / ".nemo-rl-init.lock"
+    constructed = []
+
+    class _StubPaddleOCR:
+        def __init__(self, **kwargs):
+            # The lock must already be held here: a second non-blocking
+            # exclusive flock on the same path has to fail.
+            with open(lock_path) as probe:
+                with pytest.raises(BlockingIOError):
+                    fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            constructed.append(kwargs)
+
+        def ocr(self, img_np, cls=False):
+            return [[([[0, 0]], ("stub", 1.0))]]
+
+    stub_module = types.ModuleType("paddleocr")
+    stub_module.PaddleOCR = _StubPaddleOCR
+    monkeypatch.setitem(sys.modules, "paddleocr", stub_module)
+
+    plugin = OcrEditDistanceReward()
+    assert constructed == [{"use_angle_cls": False, "lang": "en", "show_log": False}]
+    # After construction the lock is released and the engine is usable.
+    assert plugin._ocr_fn(object()) == "stub"
+
+
 @pytest.fixture
 def ray_init_and_shutdown():
     if not ray.is_initialized():

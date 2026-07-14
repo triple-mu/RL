@@ -268,10 +268,21 @@ class OcrEditDistanceReward:
         if ocr_fn is not None:
             self._ocr_fn = ocr_fn
             return
+        import fcntl
+        import os
+
         # Lazy import: paddleocr is an optional heavy dependency.
         from paddleocr import PaddleOCR  # pyrefly: ignore  # import-error
 
-        engine = PaddleOCR(use_angle_cls=False, lang="en", show_log=False)
+        # 16+ replicas cold-starting concurrently race on the model download
+        # into ~/.paddleocr (observed: half-extracted inference.pdiparams).
+        # Serialize construction; after the first replica downloads, the rest
+        # construct from the cache.
+        lock_dir = os.path.expanduser("~/.paddleocr")
+        os.makedirs(lock_dir, exist_ok=True)
+        with open(os.path.join(lock_dir, ".nemo-rl-init.lock"), "w") as lock_file:
+            fcntl.flock(lock_file, fcntl.LOCK_EX)
+            engine = PaddleOCR(use_angle_cls=False, lang="en", show_log=False)
 
         def run(img_np: Any) -> str:  # HWC uint8
             result = engine.ocr(img_np, cls=False)

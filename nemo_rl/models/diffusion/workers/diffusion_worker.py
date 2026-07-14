@@ -145,12 +145,18 @@ class DiffusionPolicyWorker:  # pragma: no cover
         os.environ.setdefault("WORLD_SIZE", str(self.world_size))
         os.environ.setdefault("LOCAL_RANK", "0")
 
-        if torch.cuda.is_available() and not torch.distributed.is_initialized():
+        if not torch.cuda.is_available():
+            raise RuntimeError(
+                "DiffusionPolicyWorker requires CUDA, but torch.cuda.is_available() "
+                "is False (e.g. a cu13 torch wheel on a CUDA-12 driver). Refusing "
+                "to fall back to CPU training silently."
+            )
+        if not torch.distributed.is_initialized():
             torch.distributed.init_process_group(
                 backend="nccl", rank=self.rank, world_size=self.world_size
             )
 
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.device = torch.device("cuda")
         self.dtype = self._parse_precision(config["precision"])
 
         self._load_pipeline()
