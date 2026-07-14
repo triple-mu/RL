@@ -66,8 +66,8 @@ class DiffusionPolicyConfig(BaseModel, extra="allow"):
 
     Defaults live on the fields (config-conventions v2); the exemplar YAMLs
     under `examples/configs/diffusion_grpo_qwen_image*.yaml` document them.
-    The config crosses the Ray boundary as a `model_dump()` dict, so workers
-    read it with key access.
+    Workers materialize a `model_dump()` dict view internally and read it
+    with plain key access.
     """
 
     model_name: str

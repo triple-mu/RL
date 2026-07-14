@@ -58,6 +58,7 @@ ACTOR_ENVIRONMENT_REGISTRY: dict[str, str] = {
     "nemo_rl.environments.nemo_gym.NemoGym": PY_EXECUTABLES.NEMO_GYM,
     # Diffusion-GRPO actors: same Torch+diffusers env as the system venv (the
     # diffusion path does not depend on vLLM/SGLang/Megatron).
+    "nemo_rl.models.diffusion.workers.diffusion_worker.DiffusionPolicyWorker": PY_EXECUTABLES.SYSTEM,
     "nemo_rl.environments.image_reward_environment._RewardWorker": PY_EXECUTABLES.SYSTEM,
 }
 
