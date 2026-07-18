@@ -83,12 +83,18 @@ def load_diffusion_pipeline(
         model_name,
         torch_dtype=dtype,
         device=device,
+        # _move_module_to_device (pin auto_diffusion_pipeline.py:178-188) calls
+        # module.to(device, dtype), which also casts the text encoder's fp32
+        # rotary buffers (inv_freq/original_inv_freq) to bf16 and skews prompt
+        # embeddings; keep the load on CPU and move device-only below.
+        move_to_device=False,
         load_for_training=True,
         parallel_scheme=None,
         peft_cfg=peft_cfg,
         # Only consulted on the peft_cfg path (pin 24b47e85 behavior).
         model_type="qwen_image",
     )
+    pipe.to(device)
     return pipe, managers
 
 

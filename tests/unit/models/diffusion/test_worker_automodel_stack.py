@@ -32,7 +32,12 @@ from nemo_rl.models.diffusion.workers.diffusion_worker import (
 
 
 class _FakePipe:
-    pass
+    def __init__(self):
+        self.to_calls: list = []
+
+    def to(self, *args, **kwargs):
+        self.to_calls.append((args, kwargs))
+        return self
 
 
 def test_load_diffusion_pipeline_uses_automodel_loader(monkeypatch):
@@ -61,6 +66,10 @@ def test_load_diffusion_pipeline_uses_automodel_loader(monkeypatch):
     assert seen["torch_dtype"] is torch.bfloat16
     assert seen["device"] == torch.device("cpu")
     assert seen["load_for_training"] is True
+    # Device-only move happens after loading: the pin's _move_module_to_device
+    # would cast fp32 rotary buffers to bf16 and skew prompt embeddings.
+    assert seen["move_to_device"] is False
+    assert pipe.to_calls == [((torch.device("cpu"),), {})]
     # Stage one keeps the worker's manual DP all-reduce: no parallel managers.
     assert seen["parallel_scheme"] is None
     assert seen["peft_cfg"] is None
