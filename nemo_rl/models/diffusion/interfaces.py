@@ -14,7 +14,7 @@
 from typing import Any, Callable, NotRequired, Protocol, TypedDict
 
 import torch
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class DiffusionPipelineCfg(BaseModel, extra="allow"):
@@ -115,9 +115,38 @@ class DiffusionGRPOAlgoConfig(BaseModel, extra="allow"):
     # `global_std`) instead of per-group std, which explodes on
     # near-constant groups under sparse rewards.
     use_global_std: bool = True
+    # Actor-update mini-batch size in samples (verl-omni ppo_mini_batch_size
+    # semantics, which counts prompts and scales by rollout.n). None keeps a
+    # single optimizer update over the whole rollout batch. When set, each
+    # step slices the rollout batch in original order into
+    # (num_prompts_per_step * num_generations_per_prompt) / ppo_mini_batch_size
+    # sequential optimizer updates; updates after the first are intentionally
+    # off-policy, exactly as in verl-omni.
+    ppo_mini_batch_size: int | None = None
     val_generation: DiffusionValGenerationCfg = Field(
         default_factory=DiffusionValGenerationCfg
     )
+
+    @model_validator(mode="after")
+    def _mini_batch_keeps_groups_whole(self) -> "DiffusionGRPOAlgoConfig":
+        mini = self.ppo_mini_batch_size
+        if mini is None:
+            return self
+        K = self.num_generations_per_prompt
+        total = self.num_prompts_per_step * K
+        if mini <= 0 or mini % K != 0:
+            raise ValueError(
+                f"grpo.ppo_mini_batch_size={mini} must be a positive multiple "
+                f"of num_generations_per_prompt={K} so contiguous slicing "
+                "never splits a GRPO group across mini-batches"
+            )
+        if total % mini != 0:
+            raise ValueError(
+                f"grpo.ppo_mini_batch_size={mini} must divide the rollout "
+                f"batch of {total} samples "
+                f"(num_prompts_per_step * num_generations_per_prompt)"
+            )
+        return self
 
 
 class DiffusionLossConfig(BaseModel, extra="allow"):
