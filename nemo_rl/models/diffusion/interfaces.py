@@ -125,7 +125,9 @@ class DiffusionLossConfig(BaseModel, extra="allow"):
 
     ratio_clip_min: float = 0.2
     ratio_clip_max: float = 0.2
-    adv_clip_max: float = 5.0
+    # Advantages are clamped to ±adv_clip_max before the ratio computation
+    # (verl-omni FlowGRPOLoss semantics); None disables the clamp.
+    adv_clip_max: float | None = 5.0
     beta: float = 0.0
     # If True, sum logprobs over the T dimension before computing the ratio,
     # so the loss is `mean_B(-adv_B * ratio_B)`. This matches verl-omni's

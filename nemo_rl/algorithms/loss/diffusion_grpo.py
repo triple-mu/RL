@@ -67,14 +67,14 @@ class DiffusionGRPOLossFn:
     ) -> tuple[torch.Tensor, dict[str, Any]]:
         ratio_clip_min: float = self.cfg["ratio_clip_min"]
         ratio_clip_max: float = self.cfg["ratio_clip_max"]
-        adv_clip_max: float = self.cfg["adv_clip_max"]
+        adv_clip_max: float | None = self.cfg["adv_clip_max"]
         beta: float = self.cfg["beta"]
 
         device = curr_logprob.device
         aggregate_per_sample: bool = bool(self.cfg["aggregate_logprobs_per_sample"])
-        advantages = advantages.to(device=device, dtype=curr_logprob.dtype).clamp(
-            -adv_clip_max, adv_clip_max
-        )
+        advantages = advantages.to(device=device, dtype=curr_logprob.dtype)
+        if adv_clip_max is not None:
+            advantages = advantages.clamp(-adv_clip_max, adv_clip_max)
         generation_logprob = generation_logprob.to(
             device=device, dtype=curr_logprob.dtype
         )

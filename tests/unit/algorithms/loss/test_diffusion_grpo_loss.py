@@ -20,7 +20,7 @@ from nemo_rl.algorithms.loss.diffusion_grpo import DiffusionGRPOLossFn
 from nemo_rl.models.diffusion.interfaces import DiffusionLossConfig
 
 
-def _cfg(beta: float = 0.0, adv_clip_max: float = 5.0) -> DiffusionLossConfig:
+def _cfg(beta: float = 0.0, adv_clip_max: float | None = 5.0) -> DiffusionLossConfig:
     return DiffusionLossConfig(
         ratio_clip_min=0.2,
         ratio_clip_max=0.2,
@@ -164,6 +164,36 @@ def test_advantage_clip_max_applied_before_ratio():
 
     # ratio=1, clipped adv=2 → pg = max(-2, -2) = -2.
     assert torch.allclose(loss, torch.tensor(-2.0))
+
+
+def test_advantage_clip_symmetric_for_negative_advantage():
+    fn = DiffusionGRPOLossFn(_cfg(adv_clip_max=2.0))
+    B, T = 1, 1
+    curr = torch.zeros(B, T)
+    gen = torch.zeros(B, T)
+    adv = torch.tensor([[-10.0]])  # clamped to -2.0
+    timestep_mask = torch.ones(B, T)
+    sample_mask = torch.ones(B)
+
+    loss, _ = fn(curr, gen, adv, timestep_mask, sample_mask)
+
+    # ratio=1, clipped adv=-2 → pg = max(2, 2) = 2.
+    assert torch.allclose(loss, torch.tensor(2.0))
+
+
+def test_advantage_clip_disabled_when_none():
+    fn = DiffusionGRPOLossFn(_cfg(adv_clip_max=None))
+    B, T = 1, 1
+    curr = torch.zeros(B, T)
+    gen = torch.zeros(B, T)
+    adv = torch.tensor([[10.0]])  # not clamped
+    timestep_mask = torch.ones(B, T)
+    sample_mask = torch.ones(B)
+
+    loss, _ = fn(curr, gen, adv, timestep_mask, sample_mask)
+
+    # ratio=1, adv stays 10 → pg = -10.
+    assert torch.allclose(loss, torch.tensor(-10.0))
 
 
 @pytest.mark.parametrize("seed", [0, 1, 2])
