@@ -47,7 +47,10 @@ from nemo_rl.models.diffusion.interfaces import (
     DiffusionTrainDataSpec,
     DiffusionTrajectorySpec,
 )
-from nemo_rl.models.diffusion.policy import DiffusionPolicy
+from nemo_rl.models.diffusion.policy import (
+    DiffusionPolicy,
+    aggregate_worker_metrics,
+)
 from nemo_rl.utils.logger import Logger, LoggerConfig
 from nemo_rl.utils.timer import Timer
 
@@ -310,10 +313,31 @@ def diffusion_grpo_train(
         )
 
         ppo_epochs = algo_cfg.ppo_epochs
+        total_samples = int(train_data["generation_logprobs"].shape[0])
+        # None → single optimizer update over the whole rollout batch.
+        mini_size = algo_cfg.ppo_mini_batch_size or total_samples
         with timer.time("train"):
             per_epoch_metrics = []
             for _epoch in range(ppo_epochs):
-                per_epoch_metrics.append(policy.train(train_data, loss_cfg_dict))
+                # Contiguous in-order mini-batches: sample_trajectory lays out
+                # each prompt's K generations contiguously and the config
+                # validator makes mini_size a multiple of K, so no GRPO group
+                # is ever split. Each mini-batch is one full optimizer update;
+                # updates after the first are off-policy by design (verl-omni
+                # ppo_mini_batch_size semantics).
+                per_mini = [
+                    policy.train(
+                        train_data.slice(start, start + mini_size), loss_cfg_dict
+                    )
+                    for start in range(0, total_samples, mini_size)
+                ]
+                per_epoch_metrics.append(
+                    per_mini[0]
+                    if len(per_mini) == 1
+                    # Cross-mini reduction mirrors verl-omni's reduce_metrics
+                    # (mean over all mini-batch updates in the step).
+                    else aggregate_worker_metrics(per_mini)
+                )
             # Aggregate: keep last-epoch values for ratio/loss (those are
             # the most informative since they reflect the largest policy drift),
             # but record per-epoch losses too.

@@ -14,7 +14,7 @@
 from typing import Any, Callable, NotRequired, Protocol, TypedDict
 
 import torch
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class DiffusionPipelineCfg(BaseModel, extra="allow"):
@@ -90,10 +90,16 @@ class DiffusionValGenerationCfg(BaseModel, extra="allow"):
     """Validation-time generation overrides.
 
     Validation always samples with the deterministic ODE (no SDE window, no
-    logprob collection); only the denoising step count is configurable.
+    logprob collection).
     """
 
     num_inference_steps: int = 40
+    # Draw every validation sample's initial latent from a fresh generator
+    # holding the same seed (verl-omni val_kwargs.seed semantics: every val
+    # request is seeded identically), so val rewards are independent of batch
+    # position, batch size and DP worker layout. Default keeps the current
+    # behavior: one generator per rollout batch, per-worker seed offsets.
+    single_seed: bool = False
 
 
 class DiffusionGRPOAlgoConfig(BaseModel, extra="allow"):
@@ -115,9 +121,38 @@ class DiffusionGRPOAlgoConfig(BaseModel, extra="allow"):
     # `global_std`) instead of per-group std, which explodes on
     # near-constant groups under sparse rewards.
     use_global_std: bool = True
+    # Actor-update mini-batch size in samples (verl-omni ppo_mini_batch_size
+    # semantics, which counts prompts and scales by rollout.n). None keeps a
+    # single optimizer update over the whole rollout batch. When set, each
+    # step slices the rollout batch in original order into
+    # (num_prompts_per_step * num_generations_per_prompt) / ppo_mini_batch_size
+    # sequential optimizer updates; updates after the first are intentionally
+    # off-policy, exactly as in verl-omni.
+    ppo_mini_batch_size: int | None = None
     val_generation: DiffusionValGenerationCfg = Field(
         default_factory=DiffusionValGenerationCfg
     )
+
+    @model_validator(mode="after")
+    def _mini_batch_keeps_groups_whole(self) -> "DiffusionGRPOAlgoConfig":
+        mini = self.ppo_mini_batch_size
+        if mini is None:
+            return self
+        K = self.num_generations_per_prompt
+        total = self.num_prompts_per_step * K
+        if mini <= 0 or mini % K != 0:
+            raise ValueError(
+                f"grpo.ppo_mini_batch_size={mini} must be a positive multiple "
+                f"of num_generations_per_prompt={K} so contiguous slicing "
+                "never splits a GRPO group across mini-batches"
+            )
+        if total % mini != 0:
+            raise ValueError(
+                f"grpo.ppo_mini_batch_size={mini} must divide the rollout "
+                f"batch of {total} samples "
+                f"(num_prompts_per_step * num_generations_per_prompt)"
+            )
+        return self
 
 
 class DiffusionLossConfig(BaseModel, extra="allow"):
@@ -125,7 +160,9 @@ class DiffusionLossConfig(BaseModel, extra="allow"):
 
     ratio_clip_min: float = 0.2
     ratio_clip_max: float = 0.2
-    adv_clip_max: float = 5.0
+    # Advantages are clamped to ±adv_clip_max before the ratio computation
+    # (verl-omni FlowGRPOLoss semantics); None disables the clamp.
+    adv_clip_max: float | None = 5.0
     beta: float = 0.0
     # If True, sum logprobs over the T dimension before computing the ratio,
     # so the loss is `mean_B(-adv_B * ratio_B)`. This matches verl-omni's

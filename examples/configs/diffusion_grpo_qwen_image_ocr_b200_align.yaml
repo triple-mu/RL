@@ -1,0 +1,48 @@
+# B200 verl-omni alignment exemplar for the Qwen-Image OCR task.
+# Experiment-only config for the A/B parity campaign: mirrors the effective
+# hyperparameters of verl-omni examples/flowgrpo_trainer/qwen_image/
+# run_qwen_image_ocr_lora.sh row by row. Not wired into recipes/ or
+# tests/test_suites; the canonical exemplar remains
+# diffusion_grpo_qwen_image_ocr.yaml.
+#
+# Inherited from the base exemplar (already aligned): 32x16=512 samples/step,
+# 300 steps, val_period 30 + val_at_start, seed 42, use_global_std,
+# adv_clip_max 5.0, ratio clip 1e-4, beta 0, lr 3e-4 / wd 1e-4 / grad clip 1.0,
+# rollout 10 steps @512^2 / true_cfg 4.0 / max_sequence_length 256,
+# SDE noise 1.2 / window 2 in [0, 5], LoRA rank 64 / alpha 128 / 12 modules.
+defaults: diffusion_grpo_qwen_image_ocr.yaml
+
+grpo:
+  use_leave_one_out_baseline: false  # verl-omni GRPO: group-mean centering, no RLOO correction
+  ppo_mini_batch_size: 256  # 512-sample rollout -> 2 optimizer updates/step (verl-omni mini = 16 prompts x 16)
+  max_val_samples: 0  # full val set every eval, like verl-omni's whole-test-split validation
+  val_generation:
+    num_inference_steps: 50  # deterministic ODE eval
+    single_seed: true  # every val sample seeded identically (verl-omni val_kwargs.seed)
+
+checkpointing:
+  checkpoint_dir: "results/diffusion_grpo_qwen_image_ocr_b200_align"
+
+# GenRM-scored OCR reward (verl-omni genrm_ocr: Qwen3-VL transcription +
+# capped Levenshtein). Field names below are provisional until the genrm_ocr
+# plugin lands; the plugin schema accepts extra keys, so this validates today.
+env:
+  image_reward:
+    plugins:
+      - name: "genrm_ocr"
+        weight: 1.0
+        base_url: "http://127.0.0.1:8000/v1"  # GenRM vLLM server endpoint
+        model_name: "Qwen/Qwen3-VL-8B-Instruct"
+        temperature: 0.7
+        top_p: 0.8
+        max_tokens: 4096
+    num_cpus_per_worker: 2
+    num_gpus_per_worker: 0.0
+    num_workers_per_plugin: 16  # pure-HTTP scoring workers; parallel across 512 images/step
+
+logger:
+  log_dir: "logs/diffusion_grpo_qwen_image_ocr_b200_align"
+  wandb_enabled: true
+  wandb:
+    project: "diffusion-grpo"
+    name: "diffusion-grpo-qwen-image-ocr-b200-align"
