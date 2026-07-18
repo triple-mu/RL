@@ -46,6 +46,23 @@ from nemo_rl.models.diffusion.interfaces import (
 )
 
 
+def derive_rollout_seed(
+    seed: int | None, worker_idx: int, *, single_seed: bool = False
+) -> int | None:
+    """Per-worker rollout seed for scattered sample_trajectory calls.
+
+    Training uses a distinct seed per rank so initial latents decorrelate
+    across DP workers while staying reproducible. `single_seed=True` (the
+    single-seed validation mode) returns the caller's seed verbatim on every
+    rank instead.
+    """
+    if seed is None:
+        return None
+    if single_seed:
+        return seed
+    return seed + worker_idx * 7919
+
+
 def aggregate_worker_metrics(
     per_worker: list[dict[str, float]],
 ) -> dict[str, float]:
@@ -167,6 +184,11 @@ class DiffusionPolicy:
                 generation_overrides=generation_overrides,
             )
             return ray.get(future)
+        # generation_overrides is a full model_dump() of
+        # DiffusionValGenerationCfg (or None on the training path).
+        single_seed = generation_overrides is not None and bool(
+            generation_overrides["single_seed"]
+        )
         shard = len(prompts) // n
         futures = []
         for i, worker in enumerate(self.worker_group.workers):
@@ -177,9 +199,7 @@ class DiffusionPolicy:
                     negative_prompts=negative_prompts[lo:hi],
                     metadata=metadata[lo:hi],
                     K=K,
-                    # Distinct per-worker seed so initial latents decorrelate
-                    # across ranks while staying reproducible.
-                    seed=None if seed is None else seed + i * 7919,
+                    seed=derive_rollout_seed(seed, i, single_seed=single_seed),
                     generation_overrides=generation_overrides,
                 )
             )

@@ -90,10 +90,16 @@ class DiffusionValGenerationCfg(BaseModel, extra="allow"):
     """Validation-time generation overrides.
 
     Validation always samples with the deterministic ODE (no SDE window, no
-    logprob collection); only the denoising step count is configurable.
+    logprob collection).
     """
 
     num_inference_steps: int = 40
+    # Draw every validation sample's initial latent from a fresh generator
+    # holding the same seed (verl-omni val_kwargs.seed semantics: every val
+    # request is seeded identically), so val rewards are independent of batch
+    # position, batch size and DP worker layout. Default keeps the current
+    # behavior: one generator per rollout batch, per-worker seed offsets.
+    single_seed: bool = False
 
 
 class DiffusionGRPOAlgoConfig(BaseModel, extra="allow"):

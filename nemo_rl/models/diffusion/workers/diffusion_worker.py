@@ -60,6 +60,21 @@ def build_no_adapter_forward(transformer: Any, forward_fn: Any) -> Any:
     return forward
 
 
+def build_single_seed_latents_fn(prepare_fn: Any) -> Any:
+    """Initial-latents fn where every sample reuses the same seed.
+
+    Matches verl-omni validation, where `val_kwargs.seed` is applied to every
+    request individually: each sample's latent equals the first draw of a
+    fresh generator seeded with `seed`, independent of batch position.
+    """
+
+    def prepare(batch_size: int, seed: int | None) -> Any:
+        one = prepare_fn(1, seed)
+        return one.repeat(batch_size, *([1] * (one.ndim - 1)))
+
+    return prepare
+
+
 def accumulate_metrics(
     acc: dict[str, float], metrics: dict[str, Any], weight: float
 ) -> None:
@@ -441,6 +456,7 @@ class DiffusionPolicyWorker:  # pragma: no cover
         # generation_overrides is a full model_dump() of DiffusionValGenerationCfg.
         val_steps = int(generation_overrides["num_inference_steps"])
         saved_algo = self.adapter.algo_cfg
+        saved_prepare = self.adapter._prepare_initial_latents_fn
         self._set_scheduler_timesteps(val_steps)
         # Pure ODE: an empty window makes every step stochastic=False, so all logprobs are 0.
         self.adapter.algo_cfg = {
@@ -448,6 +464,10 @@ class DiffusionPolicyWorker:  # pragma: no cover
             "sde_window_size": 0,
             "sde_window_range": None,
         }
+        if bool(generation_overrides["single_seed"]):
+            self.adapter._prepare_initial_latents_fn = build_single_seed_latents_fn(
+                self._prepare_initial_latents
+            )
         try:
             with torch.no_grad():
                 return self.adapter.sample_trajectory(
@@ -455,6 +475,7 @@ class DiffusionPolicyWorker:  # pragma: no cover
                 )
         finally:
             self.adapter.algo_cfg = saved_algo
+            self.adapter._prepare_initial_latents_fn = saved_prepare
             self._set_scheduler_timesteps(train_steps)
 
     def compute_transition_logprob(
