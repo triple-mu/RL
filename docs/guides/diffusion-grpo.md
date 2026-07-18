@@ -135,6 +135,7 @@ Built-in plugins:
 | `jpeg_compressibility` | negative JPEG size (classic DDPO sanity task) |
 | `pickscore` | [PickScore_v1](https://huggingface.co/yuvalkirstain/PickScore_v1) human-preference model |
 | `ocr` | 1 − normalized Levenshtein distance between PaddleOCR output and the prompt's quoted target text |
+| `genrm_ocr` | same OCR distance, but transcribed by a generative reward model behind an OpenAI-compatible endpoint (`GENRM_BASE_URL` env var; `model`/`temperature`/`top_p`/`max_tokens` plugin keys) |
 
 Reward workers are Ray actors (`num_workers_per_plugin` replicas, CPU by
 default); custom rewards register via
