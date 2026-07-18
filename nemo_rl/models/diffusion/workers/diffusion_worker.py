@@ -63,7 +63,9 @@ def calculate_shift(
     return image_seq_len * m + b
 
 
-def load_diffusion_pipeline(model_name: str, *, dtype: Any, device: Any, peft_cfg: Any = None) -> tuple[Any, dict[str, Any]]:
+def load_diffusion_pipeline(
+    model_name: str, *, dtype: Any, device: Any, peft_cfg: Any = None
+) -> tuple[Any, dict[str, Any]]:
     """Load the diffusers pipeline through the NeMo Automodel stack.
 
     Returns the ``(pipe, managers)`` two-tuple of

@@ -142,9 +142,7 @@ def test_full_path_targets_inject_and_pass_fail_loud_check():
     model = _TinyTransformer(num_blocks=3)
     hits = apply_lora_to_linear_modules(model, build_peft_config(_lora_cfg_dict()))
     assert hits == 6  # 3 blocks x {to_q, to_k}
-    assert (
-        sum(isinstance(m, LinearLoRA) for m in model.modules()) == 6
-    )
+    assert sum(isinstance(m, LinearLoRA) for m in model.modules()) == 6
     assert_lora_targets_hit(model, ["*.attn.to_q", "*.attn.to_k"])
 
 
@@ -262,9 +260,7 @@ def test_build_no_adapter_forward_zeroes_scales_and_matches_call_convention():
     assert torch.equal(out, torch.zeros(2, 3))
     assert calls and "timestep" in calls[0]
     # scales restored after the closure returns
-    assert all(
-        m.scale != 0.0 for m in model.modules() if isinstance(m, LinearLoRA)
-    )
+    assert all(m.scale != 0.0 for m in model.modules() if isinstance(m, LinearLoRA))
 
 
 # ---------------------------------------------------------------------------
