@@ -350,44 +350,6 @@ def test_trajectory_carries_timestep_mask_matching_nonzero_logprobs():
     assert torch.all(traj["generation_logprobs"][mask == 1] != 0)
 
 
-def test_build_no_adapter_forward_disables_adapter_and_matches_call_convention():
-    from contextlib import contextmanager
-
-    from nemo_rl.models.diffusion.workers.diffusion_worker import (
-        build_no_adapter_forward,
-    )
-
-    calls = []
-
-    class FakePeftModel:
-        def __init__(self):
-            self.adapter_disabled = False
-
-        @contextmanager
-        def disable_adapter(self):
-            self.adapter_disabled = True
-            try:
-                yield
-            finally:
-                self.adapter_disabled = False
-
-    model = FakePeftModel()
-
-    def forward_fn(transformer, **kwargs):
-        assert transformer is model
-        assert transformer.adapter_disabled  # must run inside the disable context
-        calls.append(kwargs)
-        return kwargs["hidden_states"] * 0
-
-    fwd = build_no_adapter_forward(model, forward_fn)
-    x = torch.ones(2, 3)
-    # pipeline._denoise_step's calling convention: no positional transformer argument
-    out = fwd(hidden_states=x, timestep=torch.tensor([1.0]))
-    assert torch.equal(out, torch.zeros(2, 3))
-    assert calls and "timestep" in calls[0]
-    assert not model.adapter_disabled  # restored after the context exits
-
-
 def test_reference_path_yields_zero_kl_when_ref_equals_policy():
     adapter = _make_window_adapter()  # helper shared with the window tests
     traj = adapter.sample_trajectory(["a"], [" "], [{}], K=2, seed=3)

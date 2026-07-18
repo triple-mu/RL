@@ -182,6 +182,89 @@ def test_partially_missed_targets_fail_loud_and_name_offenders():
         assert_lora_targets_hit(model, targets)
 
 
+# ---------------------------------------------------------------------------
+# KL reference: lora_scale_zero context manager
+# ---------------------------------------------------------------------------
+def _lora_model_with_nonzero_delta() -> torch.nn.Module:
+    from nemo_automodel.components._peft.lora import apply_lora_to_linear_modules
+
+    from nemo_rl.models.diffusion.workers.diffusion_worker import build_peft_config
+
+    torch.manual_seed(0)
+    model = _TinyTransformer()
+    apply_lora_to_linear_modules(model, build_peft_config(_lora_cfg_dict()))
+    # lora_B is zero-initialized; make the LoRA delta observable.
+    for name, param in model.named_parameters():
+        if "lora_B" in name:
+            torch.nn.init.normal_(param)
+    return model
+
+
+def test_lora_scale_zero_matches_base_forward_bitwise():
+    from nemo_rl.models.diffusion.workers.diffusion_worker import lora_scale_zero
+
+    model = _lora_model_with_nonzero_delta()
+    x = torch.randn(2, 4)
+    block = model.transformer_blocks[0]
+    base_out = torch.nn.functional.linear(
+        x, block.attn.to_q.weight, block.attn.to_q.bias
+    )
+
+    with_lora = block.attn.to_q(x)
+    assert not torch.equal(with_lora, base_out)  # delta actually active
+
+    saved_scale = block.attn.to_q.scale
+    with lora_scale_zero(model):
+        assert block.attn.to_q.scale == 0.0
+        assert torch.equal(block.attn.to_q(x), base_out)  # bitwise base-only
+    assert block.attn.to_q.scale == saved_scale
+    assert torch.equal(block.attn.to_q(x), with_lora)
+
+
+def test_lora_scale_zero_restores_scales_on_exception():
+    from nemo_automodel.components._peft.lora import LinearLoRA
+
+    from nemo_rl.models.diffusion.workers.diffusion_worker import lora_scale_zero
+
+    model = _lora_model_with_nonzero_delta()
+    scales = [m.scale for m in model.modules() if isinstance(m, LinearLoRA)]
+    with pytest.raises(ValueError):
+        with lora_scale_zero(model):
+            raise ValueError("boom")
+    assert [m.scale for m in model.modules() if isinstance(m, LinearLoRA)] == scales
+
+
+def test_build_no_adapter_forward_zeroes_scales_and_matches_call_convention():
+    from nemo_automodel.components._peft.lora import LinearLoRA
+
+    from nemo_rl.models.diffusion.workers.diffusion_worker import (
+        build_no_adapter_forward,
+    )
+
+    model = _lora_model_with_nonzero_delta()
+    calls = []
+
+    def forward_fn(transformer, **kwargs):
+        assert transformer is model
+        # must run with every LoRA branch disabled
+        assert all(
+            m.scale == 0.0 for m in transformer.modules() if isinstance(m, LinearLoRA)
+        )
+        calls.append(kwargs)
+        return kwargs["hidden_states"] * 0
+
+    fwd = build_no_adapter_forward(model, forward_fn)
+    x = torch.ones(2, 3)
+    # pipeline._denoise_step's calling convention: no positional transformer argument
+    out = fwd(hidden_states=x, timestep=torch.tensor([1.0]))
+    assert torch.equal(out, torch.zeros(2, 3))
+    assert calls and "timestep" in calls[0]
+    # scales restored after the closure returns
+    assert all(
+        m.scale != 0.0 for m in model.modules() if isinstance(m, LinearLoRA)
+    )
+
+
 def test_lora_schema_defaults_are_full_path_patterns():
     from nemo_rl.models.diffusion.interfaces import DiffusionLoraCfg
 

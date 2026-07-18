@@ -27,13 +27,14 @@ import time drags ``torch._dynamo.config`` (a ``ConfigModuleInstance``) which
 is not picklable.
 
 LoRA reference: when enabled, the reference-policy mean is computed by
-disabling the PEFT adapter on the *same* transformer instance, avoiding a
-duplicate model copy.
+zeroing the LinearLoRA scales on the *same* transformer instance
+(`lora_scale_zero`), avoiding a duplicate model copy.
 """
 
 from __future__ import annotations
 
 import os
+from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any
 
 import ray
@@ -124,8 +125,30 @@ def assert_lora_targets_hit(transformer: Any, target_modules: list[str]) -> None
         )
 
 
+@contextmanager
+def lora_scale_zero(module: Any) -> Any:
+    """Temporarily zero every LinearLoRA scale for a base-only forward.
+
+    `LinearLoRA.forward` adds `lora_B(lora_A(x) * scale)` with a bias-free
+    `lora_B`, so scale=0 makes the LoRA branch exactly zero and the output
+    bitwise equal to the frozen base model — the KL reference policy on the
+    *same* transformer instance, no duplicate copy.
+    """
+    from nemo_automodel.components._peft.lora import LinearLoRA
+
+    loras = [m for m in module.modules() if isinstance(m, LinearLoRA)]
+    saved = [m.scale for m in loras]
+    for m in loras:
+        m.scale = 0.0
+    try:
+        yield
+    finally:
+        for m, s in zip(loras, saved):
+            m.scale = s
+
+
 def build_no_adapter_forward(transformer: Any, forward_fn: Any) -> Any:
-    """Reference-policy forward: run `forward_fn` with the PEFT adapter disabled.
+    """Reference-policy forward: run `forward_fn` with LoRA contributions zeroed.
 
     Returns a closure matching the `forward_override(**kwargs)` convention of
     `QwenImagePipelineAdapter._denoise_step`; `forward_fn` is the worker's
@@ -134,7 +157,7 @@ def build_no_adapter_forward(transformer: Any, forward_fn: Any) -> Any:
     """
 
     def forward(**kwargs: Any) -> Any:
-        with transformer.disable_adapter():
+        with lora_scale_zero(transformer):
             return forward_fn(transformer, **kwargs)
 
     return forward
