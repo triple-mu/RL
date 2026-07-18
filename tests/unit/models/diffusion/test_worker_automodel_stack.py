@@ -359,6 +359,33 @@ def test_checkpointer_lora_round_trip_and_layout(tmp_path, single_process_group)
         assert torch.allclose(state1[pid]["exp_avg_sq"], state2[pid]["exp_avg_sq"])
 
 
+# ---------------------------------------------------------------------------
+# Misc: inlined calculate_shift and worker venv registration
+# ---------------------------------------------------------------------------
+def test_inlined_calculate_shift_matches_diffusers():
+    qwenimage = pytest.importorskip("diffusers.pipelines.qwenimage.pipeline_qwenimage")
+
+    from nemo_rl.models.diffusion.workers.diffusion_worker import calculate_shift
+
+    for seq_len in (256, 1024, 4096, 64 * 64):
+        assert calculate_shift(seq_len) == qwenimage.calculate_shift(seq_len)
+    assert calculate_shift(1024, 128, 2048, 0.4, 1.2) == qwenimage.calculate_shift(
+        1024, 128, 2048, 0.4, 1.2
+    )
+
+
+def test_diffusion_worker_registered_with_automodel_diffusion_env():
+    from nemo_rl.distributed.ray_actor_environment_registry import (
+        ACTOR_ENVIRONMENT_REGISTRY,
+    )
+
+    exe = ACTOR_ENVIRONMENT_REGISTRY[
+        "nemo_rl.models.diffusion.workers.diffusion_worker.DiffusionPolicyWorker"
+    ]
+    assert "--extra automodel" in exe
+    assert "--extra diffusion" in exe
+
+
 def test_lora_schema_defaults_are_full_path_patterns():
     from nemo_rl.models.diffusion.interfaces import DiffusionLoraCfg
 

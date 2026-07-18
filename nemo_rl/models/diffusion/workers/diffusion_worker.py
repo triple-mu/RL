@@ -45,6 +45,24 @@ if TYPE_CHECKING:
     from nemo_rl.models.diffusion.interfaces import DiffusionPolicyConfig
 
 
+def calculate_shift(
+    image_seq_len: int,
+    base_seq_len: int = 256,
+    max_seq_len: int = 4096,
+    base_shift: float = 0.5,
+    max_shift: float = 1.15,
+) -> float:
+    """Flow-matching timestep shift `mu`, linear in the image sequence length.
+
+    Inlined verbatim from diffusers
+    `pipelines.qwenimage.pipeline_qwenimage.calculate_shift` (0.38) to avoid
+    the deep private-path import; numerically identical.
+    """
+    m = (max_shift - base_shift) / (max_seq_len - base_seq_len)
+    b = base_shift - m * base_seq_len
+    return image_seq_len * m + b
+
+
 def load_diffusion_pipeline(model_name: str, *, dtype: Any, device: Any, peft_cfg: Any = None) -> tuple[Any, dict[str, Any]]:
     """Load the diffusers pipeline through the NeMo Automodel stack.
 
@@ -378,7 +396,6 @@ class DiffusionPolicyWorker:  # pragma: no cover
 
     def _set_scheduler_timesteps(self, num_inference_steps: int) -> None:
         import numpy as np
-        from diffusers.pipelines.qwenimage.pipeline_qwenimage import calculate_shift
 
         sigmas = np.linspace(1.0, 1 / num_inference_steps, num_inference_steps)
         height = self.config["pipeline"]["height"]
