@@ -24,15 +24,15 @@ checkpointing:
   checkpoint_dir: "results/diffusion_grpo_qwen_image_ocr_b200_align"
 
 # GenRM-scored OCR reward (verl-omni genrm_ocr: Qwen3-VL transcription +
-# capped Levenshtein). Field names below are provisional until the genrm_ocr
-# plugin lands; the plugin schema accepts extra keys, so this validates today.
+# capped Levenshtein). The serving endpoint comes from the GENRM_BASE_URL
+# environment variable (e.g. http://127.0.0.1:8000/v1), which must be set
+# before launch; the plugin hard-fails at construction without it.
 env:
   image_reward:
     plugins:
       - name: "genrm_ocr"
         weight: 1.0
-        base_url: "http://127.0.0.1:8000/v1"  # GenRM vLLM server endpoint
-        model_name: "Qwen/Qwen3-VL-8B-Instruct"
+        model: "Qwen/Qwen3-VL-8B-Instruct"
         temperature: 0.7
         top_p: 0.8
         max_tokens: 4096
