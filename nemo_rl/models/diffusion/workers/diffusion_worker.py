@@ -44,6 +44,33 @@ if TYPE_CHECKING:
     from nemo_rl.models.diffusion.interfaces import DiffusionPolicyConfig
 
 
+def load_diffusion_pipeline(model_name: str, *, dtype: Any, device: Any, peft_cfg: Any = None) -> tuple[Any, dict[str, Any]]:
+    """Load the diffusers pipeline through the NeMo Automodel stack.
+
+    Returns the ``(pipe, managers)`` two-tuple of
+    ``NeMoAutoDiffusionPipeline.from_pretrained``: `pipe` is the real diffusers
+    pipeline (``encode_prompt``/``vae``/private pack helpers all usable),
+    `managers` maps component name -> parallel manager. Stage one of the
+    migration keeps the worker's manual DP all-reduce, so no parallel scheme is
+    requested and `managers` stays empty.
+    """
+    from nemo_automodel._diffusers.auto_diffusion_pipeline import (
+        NeMoAutoDiffusionPipeline,
+    )
+
+    pipe, managers = NeMoAutoDiffusionPipeline.from_pretrained(
+        model_name,
+        torch_dtype=dtype,
+        device=device,
+        load_for_training=True,
+        parallel_scheme=None,
+        peft_cfg=peft_cfg,
+        # Only consulted on the peft_cfg path (pin 24b47e85 behavior).
+        model_type="qwen_image",
+    )
+    return pipe, managers
+
+
 def build_no_adapter_forward(transformer: Any, forward_fn: Any) -> Any:
     """Reference-policy forward: run `forward_fn` with the PEFT adapter disabled.
 
@@ -104,6 +131,7 @@ class DiffusionPolicyWorker:  # pragma: no cover
     # stay `Any` because those imports are deferred into method bodies).
     device: Any
     _pipe: Any
+    _managers: dict[str, Any]
     transformer: Any
     text_encoder: Any
     tokenizer: Any
@@ -203,11 +231,10 @@ class DiffusionPolicyWorker:  # pragma: no cover
         }[precision]
 
     def _load_pipeline(self) -> None:
-        from diffusers import QwenImagePipeline
-
         model_name = self.config["model_name"]
-        pipe = QwenImagePipeline.from_pretrained(model_name, torch_dtype=self.dtype)
-        pipe.to(self.device)
+        pipe, self._managers = load_diffusion_pipeline(
+            model_name, dtype=self.dtype, device=self.device
+        )
         self._pipe = pipe
         self.transformer = pipe.transformer
         self.text_encoder = pipe.text_encoder
