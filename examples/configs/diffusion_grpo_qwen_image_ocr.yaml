@@ -64,7 +64,10 @@ policy:
     # Mirrors verl-omni run_qwen_image_ocr_lora.sh exactly. Do NOT add the
     # AdaLN modulation layers (img_mod/txt_mod): LoRA on them at this lr
     # destabilizes training (global grid-artifact collapse).
-    target_modules: ["to_q", "to_k", "to_v", "to_out.0", "add_q_proj", "add_k_proj", "add_v_proj", "to_add_out", "img_mlp.net.0.proj", "img_mlp.net.2", "txt_mlp.net.0.proj", "txt_mlp.net.2"]
+    # Full-path wildcard patterns (NeMo Automodel ModuleMatcher anchors the
+    # whole module FQN; bare suffixes like 'to_q' match nothing). Same 12
+    # modules as Automodel's qwen_image_t2i_flow_lora.yaml.
+    target_modules: ["*.attn.to_q", "*.attn.to_k", "*.attn.to_v", "*.attn.to_out.0", "*.attn.add_q_proj", "*.attn.add_k_proj", "*.attn.add_v_proj", "*.attn.to_add_out", "*.img_mlp.net.0.proj", "*.img_mlp.net.2", "*.txt_mlp.net.0.proj", "*.txt_mlp.net.2"]
     dropout: 0.0
     exclude_modules: null
 

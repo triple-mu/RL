@@ -40,13 +40,25 @@ class DiffusionAlgoCfg(BaseModel, extra="allow"):
 
 
 class DiffusionLoraCfg(BaseModel, extra="allow"):
-    """LoRA adapter configuration."""
+    """LoRA adapter configuration (NeMo Automodel `_peft` stack).
+
+    `rank`/`alpha` map onto Automodel PeftConfig `dim`/`alpha`.
+    `target_modules` entries are full-path wildcard patterns anchored to the
+    transformer's module FQNs (e.g. '*.attn.to_q', '*.img_mlp.net.0.proj');
+    peft-style bare suffixes like 'to_q' match nothing. LoRA weights follow
+    the base dtype (bf16).
+    """
 
     enabled: bool = True
     rank: int = 32
     alpha: int = 64
     target_modules: list[str] = Field(
-        default_factory=lambda: ["to_q", "to_k", "to_v", "to_out.0"]
+        default_factory=lambda: [
+            "*.attn.to_q",
+            "*.attn.to_k",
+            "*.attn.to_v",
+            "*.attn.to_out.0",
+        ]
     )
     dropout: float = 0.0
     exclude_modules: list[str] | None = None

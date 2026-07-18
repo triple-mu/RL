@@ -71,6 +71,59 @@ def load_diffusion_pipeline(model_name: str, *, dtype: Any, device: Any, peft_cf
     return pipe, managers
 
 
+def build_peft_config(lora_cfg: dict[str, Any]) -> Any:
+    """Map the worker LoRA schema onto Automodel's `PeftConfig`.
+
+    `rank`/`alpha` become `dim`/`alpha`. `target_modules` must already be
+    full-path wildcard patterns ('*.attn.to_q'): Automodel's ModuleMatcher
+    anchors each pattern to the whole module FQN, so peft-style bare suffixes
+    ('to_q') silently match nothing. `lora_dtype` stays None so the loader
+    pins LoRA weights to bf16 alongside the base weights (Automodel diffusion
+    convention; AdamW's fp32 moments carry optimizer precision).
+    """
+    from nemo_automodel.components._peft.lora import PeftConfig
+
+    return PeftConfig(
+        target_modules=list(lora_cfg["target_modules"]),
+        exclude_modules=list(lora_cfg["exclude_modules"] or []),
+        dim=int(lora_cfg["rank"]),
+        alpha=int(lora_cfg["alpha"]),
+        dropout=float(lora_cfg["dropout"]),
+    )
+
+
+def assert_lora_targets_hit(transformer: Any, target_modules: list[str]) -> None:
+    """Fail loud when LoRA injection silently missed its targets.
+
+    Automodel's `apply_lora_to_linear_modules` returns normally on zero
+    matches, so a bad pattern list would train nothing. Every pattern must hit
+    at least one injected `LinearLoRA` (Qwen-Image OCR recipe: 60 blocks x 12
+    targets = 720 total).
+    """
+    from nemo_automodel.components._peft.lora import LinearLoRA
+    from nemo_automodel.components._peft.module_matcher import wildcard_match
+
+    lora_names = [
+        name
+        for name, module in transformer.named_modules()
+        if isinstance(module, LinearLoRA)
+    ]
+    missed = [
+        pattern
+        for pattern in target_modules
+        if not any(
+            name == pattern or wildcard_match(pattern, name) for name in lora_names
+        )
+    ]
+    if not lora_names or missed:
+        raise RuntimeError(
+            f"LoRA injection hit {len(lora_names)} modules but these "
+            f"target_modules matched nothing: {missed or target_modules}. "
+            "Automodel target_modules are full-path wildcard patterns "
+            "('*.attn.to_q'), not peft-style bare suffixes ('to_q')."
+        )
+
+
 def build_no_adapter_forward(transformer: Any, forward_fn: Any) -> Any:
     """Reference-policy forward: run `forward_fn` with the PEFT adapter disabled.
 
@@ -126,9 +179,9 @@ def accumulate_metrics(
 class DiffusionPolicyWorker:  # pragma: no cover
     """Ray actor owning one Qwen-Image pipeline + LoRA optimizer."""
 
-    # Populated by the _load_pipeline/_maybe_apply_lora/_build_optimizer/
-    # _build_adapter helpers invoked from __init__ (torch/diffusers/peft types
-    # stay `Any` because those imports are deferred into method bodies).
+    # Populated by the _load_pipeline/_build_optimizer/_build_adapter helpers
+    # invoked from __init__ (torch/diffusers/nemo_automodel types stay `Any`
+    # because those imports are deferred into method bodies).
     device: Any
     _pipe: Any
     _managers: dict[str, Any]
@@ -209,7 +262,6 @@ class DiffusionPolicyWorker:  # pragma: no cover
         self.dtype = self._parse_precision(self.config["precision"])
 
         self._load_pipeline()
-        self._maybe_apply_lora()
         self._build_optimizer()
         self._loss_fn = None
         self._build_adapter()
@@ -231,12 +283,21 @@ class DiffusionPolicyWorker:  # pragma: no cover
         }[precision]
 
     def _load_pipeline(self) -> None:
+        lora_cfg = self.config["lora_cfg"]
+        self._lora_enabled = bool(lora_cfg["enabled"])
         model_name = self.config["model_name"]
         pipe, self._managers = load_diffusion_pipeline(
-            model_name, dtype=self.dtype, device=self.device
+            model_name,
+            dtype=self.dtype,
+            device=self.device,
+            # LoRA injection happens inside the loader (pre-parallelization);
+            # base transformer weights are frozen there as well.
+            peft_cfg=build_peft_config(lora_cfg) if self._lora_enabled else None,
         )
         self._pipe = pipe
         self.transformer = pipe.transformer
+        if self._lora_enabled:
+            assert_lora_targets_hit(self.transformer, lora_cfg["target_modules"])
         self.text_encoder = pipe.text_encoder
         self.tokenizer = pipe.tokenizer
         self.vae = pipe.vae
@@ -286,23 +347,6 @@ class DiffusionPolicyWorker:  # pragma: no cover
         self.scheduler.set_timesteps(
             num_inference_steps, device=self.device, sigmas=sigmas.tolist(), mu=mu
         )
-
-    def _maybe_apply_lora(self) -> None:
-        lora_cfg = self.config["lora_cfg"]
-        if not lora_cfg["enabled"]:
-            self._lora_enabled = False
-            return
-        from peft import LoraConfig, get_peft_model
-
-        peft_config = LoraConfig(
-            r=lora_cfg["rank"],
-            lora_alpha=lora_cfg["alpha"],
-            target_modules=lora_cfg["target_modules"],
-            lora_dropout=lora_cfg["dropout"],
-            exclude_modules=lora_cfg["exclude_modules"],
-        )
-        self.transformer = get_peft_model(self.transformer, peft_config)
-        self._lora_enabled = True
 
     def _build_optimizer(self) -> None:
         import torch

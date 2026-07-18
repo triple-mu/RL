@@ -79,3 +79,122 @@ def test_load_diffusion_pipeline_returns_two_tuple(monkeypatch):
     )
     assert isinstance(pipe, _FakePipe)
     assert managers is fake_managers
+
+
+# ---------------------------------------------------------------------------
+# LoRA: schema -> PeftConfig mapping and fail-loud injection check
+# ---------------------------------------------------------------------------
+class _TinyBlock(torch.nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.attn = torch.nn.Module()
+        self.attn.to_q = torch.nn.Linear(4, 4)
+        self.attn.to_k = torch.nn.Linear(4, 4)
+
+
+class _TinyTransformer(torch.nn.Module):
+    def __init__(self, num_blocks: int = 2) -> None:
+        super().__init__()
+        self.transformer_blocks = torch.nn.ModuleList(
+            _TinyBlock() for _ in range(num_blocks)
+        )
+
+
+def _lora_cfg_dict(**overrides):
+    cfg = {
+        "enabled": True,
+        "rank": 2,
+        "alpha": 4,
+        "target_modules": ["*.attn.to_q", "*.attn.to_k"],
+        "dropout": 0.0,
+        "exclude_modules": None,
+    }
+    cfg.update(overrides)
+    return cfg
+
+
+def test_build_peft_config_maps_schema_fields():
+    from nemo_rl.models.diffusion.workers.diffusion_worker import build_peft_config
+
+    peft_cfg = build_peft_config(_lora_cfg_dict(rank=64, alpha=128))
+    assert peft_cfg.dim == 64
+    assert peft_cfg.alpha == 128
+    assert peft_cfg.target_modules == ["*.attn.to_q", "*.attn.to_k"]
+    assert peft_cfg.exclude_modules == []
+    assert peft_cfg.dropout == 0.0
+    # The loader pins LoRA weights to the base dtype (bf16); leave it unset here.
+    assert peft_cfg.lora_dtype is None
+
+
+def test_full_path_targets_inject_and_pass_fail_loud_check():
+    from nemo_automodel.components._peft.lora import (
+        LinearLoRA,
+        apply_lora_to_linear_modules,
+    )
+
+    from nemo_rl.models.diffusion.workers.diffusion_worker import (
+        assert_lora_targets_hit,
+        build_peft_config,
+    )
+
+    model = _TinyTransformer(num_blocks=3)
+    hits = apply_lora_to_linear_modules(model, build_peft_config(_lora_cfg_dict()))
+    assert hits == 6  # 3 blocks x {to_q, to_k}
+    assert (
+        sum(isinstance(m, LinearLoRA) for m in model.modules()) == 6
+    )
+    assert_lora_targets_hit(model, ["*.attn.to_q", "*.attn.to_k"])
+
+
+def test_bare_suffix_targets_match_nothing_and_fail_loud():
+    from nemo_automodel.components._peft.lora import apply_lora_to_linear_modules
+
+    from nemo_rl.models.diffusion.workers.diffusion_worker import (
+        assert_lora_targets_hit,
+        build_peft_config,
+    )
+
+    model = _TinyTransformer()
+    # peft-style bare suffixes: ModuleMatcher anchors the whole FQN, so this
+    # silently injects nothing — exactly the failure the check must catch.
+    hits = apply_lora_to_linear_modules(
+        model, build_peft_config(_lora_cfg_dict(target_modules=["to_q", "to_k"]))
+    )
+    assert hits == 0
+    with pytest.raises(RuntimeError, match="full-path"):
+        assert_lora_targets_hit(model, ["to_q", "to_k"])
+
+
+def test_partially_missed_targets_fail_loud_and_name_offenders():
+    from nemo_automodel.components._peft.lora import apply_lora_to_linear_modules
+
+    from nemo_rl.models.diffusion.workers.diffusion_worker import (
+        assert_lora_targets_hit,
+        build_peft_config,
+    )
+
+    model = _TinyTransformer()
+    targets = ["*.attn.to_q", "*.attn.to_v"]  # to_v does not exist
+    apply_lora_to_linear_modules(
+        model, build_peft_config(_lora_cfg_dict(target_modules=targets))
+    )
+    with pytest.raises(RuntimeError, match=r"to_v"):
+        assert_lora_targets_hit(model, targets)
+
+
+def test_lora_schema_defaults_are_full_path_patterns():
+    from nemo_rl.models.diffusion.interfaces import DiffusionLoraCfg
+
+    cfg = DiffusionLoraCfg()
+    assert cfg.target_modules, "defaults must not be empty"
+    assert all(t.startswith("*.") for t in cfg.target_modules)
+
+
+def test_exemplar_yaml_targets_are_full_path_patterns():
+    yaml = pytest.importorskip("yaml")
+
+    with open("examples/configs/diffusion_grpo_qwen_image_ocr.yaml") as f:
+        cfg = yaml.safe_load(f)
+    targets = cfg["policy"]["lora_cfg"]["target_modules"]
+    assert len(targets) == 12
+    assert all(t.startswith("*.") for t in targets)
