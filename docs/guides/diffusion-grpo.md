@@ -64,10 +64,12 @@ materialize bit-identical LoRA init; the training loop logs
 
 ## Quickstart: Qwen-Image on the OCR Task
 
-Install the diffusion extra (Diffusers, PEFT, PaddleOCR):
+Install the diffusion extra (Diffusers, PaddleOCR) together with the
+NeMo Automodel extra, which provides the worker's model-lifecycle stack
+(pipeline loading, LoRA, checkpointing):
 
 ```bash
-uv sync --extra diffusion
+uv sync --extra automodel --extra diffusion
 ```
 
 Export the Flow-GRPO OCR prompt dataset (19,653 train / 1,018 val prompts; the

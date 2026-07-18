@@ -15,8 +15,10 @@
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 
-# --extra diffusion: diffusers/peft live behind the optional extra and are
-# not part of the base CI environment. Other environments can inject an
+# --extra diffusion: diffusers lives behind the optional extra and is not
+# part of the base CI environment. The policy worker itself launches in the
+# automodel+diffusion venv via the actor registry
+# (PY_EXECUTABLES.AUTOMODEL_DIFFUSION). Other environments can inject an
 # interpreter via NRL_PYTHON.
 PY=${NRL_PYTHON:-uv run --frozen --extra diffusion python}
 export PATH="$HOME/.local/bin:$PATH"
@@ -62,7 +64,7 @@ $PY examples/run_diffusion_grpo.py \
   'policy.algo.sde_window_range=[0,8]' \
   policy.lora_cfg.rank=4 \
   policy.lora_cfg.alpha=8 \
-  'policy.lora_cfg.target_modules=[to_q,to_k,to_v]' \
+  'policy.lora_cfg.target_modules=[*.attn.to_q,*.attn.to_k,*.attn.to_v]' \
   grpo.num_prompts_per_step=1 \
   grpo.num_generations_per_prompt=4 \
   grpo.max_num_steps=5 \
@@ -84,11 +86,13 @@ $PY examples/run_diffusion_grpo.py \
   checkpointing.save_period=5 \
   2>&1 | tee "$LOG_DIR/run.log"
 
-# The overrides train 5 steps with save_period=5, so step_5 must exist.
+# The overrides train 5 steps with save_period=5, so step_5 must exist with
+# the Automodel Checkpointer layout: model/ (LoRA adapter) + optim/.metadata
+# (DCP optimizer state; written last = completeness marker).
 CHECKPOINT_DIR="$CKPT_DIR/step_5"
-if [[ ! -e "$CHECKPOINT_DIR/adapter_model.safetensors" ]] && \
-   [[ ! -e "$CHECKPOINT_DIR/transformer.pt" ]]; then
-  echo "FAILED: $CHECKPOINT_DIR did not produce a LoRA adapter or full-state checkpoint" >&2
+if [[ ! -e "$CHECKPOINT_DIR/model/adapter_model.safetensors" ]] || \
+   [[ ! -e "$CHECKPOINT_DIR/optim/.metadata" ]]; then
+  echo "FAILED: $CHECKPOINT_DIR is missing the LoRA adapter or DCP optimizer metadata" >&2
   exit 1
 fi
 
