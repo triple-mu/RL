@@ -76,7 +76,8 @@ class DiffusionPolicyConfig(BaseModel, extra="allow"):
     train_micro_batch_size: int | None = None
     enable_gradient_checkpointing: bool = True
     # Keep per-(latent-element) logprobs instead of reducing per step; pairs
-    # with loss_fn.aggregate_logprobs_per_sample (verl-omni parity).
+    # with loss_fn.aggregate_logprobs_per_sample (experimental, not verl-omni
+    # semantics: verl-omni means over all non-batch dims, matching the default).
     per_element_logprob: bool = False
     # Required for multi-worker DP: all ranks must seed LoRA init identically.
     seed: int | None = None
@@ -164,10 +165,11 @@ class DiffusionLossConfig(BaseModel, extra="allow"):
     # (verl-omni FlowGRPOLoss semantics); None disables the clamp.
     adv_clip_max: float | None = 5.0
     beta: float = 0.0
-    # If True, sum logprobs over the T dimension before computing the ratio,
-    # so the loss is `mean_B(-adv_B * ratio_B)`. This matches verl-omni's
-    # 1-D-per-sample formulation. Default False uses per-(B, T) elements
-    # (Flow-GRPO paper formulation).
+    # Default False keeps per-(sample, step) ratio elements, which is the
+    # verl-omni/Flow-GRPO formulation (verl-omni's log_prob is [B]: a mean
+    # over all non-batch dims, never a sum along T). True is an experimental
+    # sum-aggregation over T that inflates the log-ratio scale by
+    # ~window_size and is incompatible with 1e-4-scale ratio clips.
     aggregate_logprobs_per_sample: bool = False
 
 

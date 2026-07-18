@@ -22,7 +22,7 @@ loss_fn:
   ratio_clip_max: 1.0e-4
   adv_clip_max: 5.0
   beta: 0.0
-  aggregate_logprobs_per_sample: false  # false = per-(B,T) elements (Flow-GRPO paper); true = verl-omni per-sample ratio
+  aggregate_logprobs_per_sample: false  # false = verl-omni/Flow-GRPO per-(sample, step) ratio; true = experimental T-sum (breaks 1e-4 clip scale)
 
 checkpointing:
   enabled: true

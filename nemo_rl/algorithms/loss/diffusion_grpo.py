@@ -81,12 +81,13 @@ class DiffusionGRPOLossFn:
         timestep_mask = timestep_mask.to(device=device)
         sample_mask = sample_mask.to(device=device)
         if aggregate_per_sample:
-            # Match verl-omni's FlowGRPOLoss tensor convention:
-            #   ratio is kept at per-(B, N_latent_token) granularity, not
-            #   collapsed to per-sample. We sum logprobs over the timestep
-            #   dimension and any per-element channel/feature dimensions
-            #   beyond a leading latent-token axis. For [B, T] input
-            #   (per-step-aggregated logprob) we collapse to [B] as before.
+            # Experimental sum-aggregation, NOT verl-omni semantics: verl-omni
+            # keeps log_prob at [B] by averaging over all non-batch dims and
+            # never sums along T, so its per-(sample, step) ratio is what the
+            # default False path below reproduces. Summing here inflates the
+            # log-ratio scale by ~window_size, which is incompatible with the
+            # 1e-4-scale ratio clip used for verl-omni parity.
+            #   [B, T] input (per-step-aggregated logprob) collapses to [B].
             tm = timestep_mask.float()
             while tm.ndim < curr_logprob.ndim:
                 tm = tm.unsqueeze(-1)
@@ -104,8 +105,8 @@ class DiffusionGRPOLossFn:
                 # Per-element mode: [B, T, N, packed_C, ...]. Sum T and any
                 # trailing channel dims, keep the FIRST non-batch spatial
                 # axis (treated as the latent-token axis). The resulting
-                # ratio has shape [B, N_token], matching verl-omni's 256-element
-                # tensor convention at (B=4, N_token=64).
+                # ratio has shape [B, N_token]. Experimental; verl-omni never
+                # produces a per-token ratio (its log_prob is [B]).
                 # dims to sum: T (dim 1) and dims 3..ndim-1 (everything past N)
                 sum_dims = (1,) + tuple(range(3, curr_logprob.ndim))
                 curr_logprob = (curr_logprob * tm).sum(dim=sum_dims)
