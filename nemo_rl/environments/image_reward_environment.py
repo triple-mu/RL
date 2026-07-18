@@ -27,7 +27,10 @@ Plugin contract (:class:`BaseImageReward`):
   component scores in the dict; aggregation sums all components.
 """
 
+import functools
 import hashlib
+import os
+import re
 from typing import Annotated, Any, Callable, Protocol
 
 import ray
@@ -313,15 +316,134 @@ class OcrEditDistanceReward:
         return {"ocr": torch.tensor(scores, dtype=torch.float32)}
 
 
-_PLUGIN_REGISTRY: dict[str, Callable[[], BaseImageReward]] = {
+# verl-omni genrm_ocr.py DEFAULT_GRM_PROMPT, verbatim.
+GENRM_OCR_PROMPT = "Please output only the text content from the image without any additional descriptions or formatting."
+
+
+def genrm_ocr_score(text: str, ground_truth: str) -> float:
+    """verl-omni `genrm_ocr._levenshtein_score`: GRM transcription vs ground truth.
+
+    Both sides are stripped of all whitespace and lower-cased; a substring hit
+    costs 0, otherwise the Levenshtein distance applies, capped at len(gt) so
+    hallucinated extra characters cost at most a full miss. Empty ground
+    truth: only an empty transcription is a perfect match.
+    """
+    gt = re.sub(r"\s+", "", ground_truth).lower()
+    text = re.sub(r"\s+", "", text).lower()
+    dist = 0 if gt in text else _levenshtein(text, gt)
+    dist = min(dist, len(gt))
+    if len(gt) > 0:
+        return 1 - dist / len(gt)
+    return 1.0 if len(text) == 0 else 0.0
+
+
+class GenRmOcrOptions(BaseModel, extra="allow"):
+    """Extra keys of a `genrm_ocr` plugins entry.
+
+    Defaults mirror verl-omni genrm_ocr.py (`DEFAULT_GRM_MODEL_PATH` and
+    `DEFAULT_SAMPLING_PARAMS`).
+    """
+
+    model: str = "~/models/tiny-random/qwen3-vl"
+    temperature: float = 0.7
+    top_p: float = 0.8
+    max_tokens: int = 4096
+
+
+class GenRmOcrReward:
+    """OCR reward from a generative reward model (port of verl-omni `genrm_ocr`).
+
+    Each image is PNG-base64 encoded into an OpenAI-compatible
+    `/chat/completions` request against the endpoint from the `GENRM_BASE_URL`
+    environment variable (e.g. `http://localhost:30000/v1`); the returned
+    transcription is scored against `metadata["ground_truth"]` with
+    :func:`genrm_ocr_score`. Pure HTTP client: run it with
+    `num_gpus_per_worker: 0` and scale via `num_workers_per_plugin`.
+    """
+
+    name: str = "genrm_ocr"
+    weight: float = 1.0
+
+    def __init__(self, **options: Any) -> None:
+        opts = GenRmOcrOptions.model_validate(options)
+        base_url = os.environ.get("GENRM_BASE_URL")
+        if not base_url:
+            raise ValueError(
+                "genrm_ocr requires the GENRM_BASE_URL environment variable, "
+                "e.g. http://localhost:30000/v1"
+            )
+        self._url = base_url.rstrip("/") + "/chat/completions"
+        self._model = os.path.expanduser(opts.model)
+        self._sampling_params: dict[str, Any] = {
+            "temperature": opts.temperature,
+            "top_p": opts.top_p,
+            "max_tokens": opts.max_tokens,
+        }
+
+    def _transcribe(self, image_data_url: str) -> str:
+        import requests
+
+        request = {
+            "messages": [
+                {"role": "system", "content": "You are a helpful assistant."},
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "image_url", "image_url": {"url": image_data_url}},
+                        {"type": "text", "text": GENRM_OCR_PROMPT},
+                    ],
+                },
+            ],
+            "model": self._model,
+            **self._sampling_params,
+        }
+        # Mirrors verl-omni genrm_ocr: unbounded timeout, no retry; a failed
+        # request raises and fails the training step loudly.
+        response = requests.post(self._url, json=request, timeout=None)
+        return response.json()["choices"][0]["message"]["content"]
+
+    def score(
+        self,
+        images: torch.Tensor,
+        prompts: list[str],
+        metadata: list[dict[str, Any]],
+    ) -> dict[str, torch.Tensor]:
+        import base64
+        import io as _io
+
+        from PIL import Image
+
+        if images.shape[0] != len(metadata):
+            raise ValueError(
+                f"images batch={images.shape[0]} but metadata len={len(metadata)}"
+            )
+        arr = (
+            (images * 255).round().clamp(0, 255).to(torch.uint8).cpu().numpy()
+        ).transpose(0, 2, 3, 1)
+        scores = []
+        for img_np, meta in zip(arr, metadata):
+            buf = _io.BytesIO()
+            Image.fromarray(img_np).save(buf, format="PNG")
+            data_url = "data:image/png;base64," + base64.b64encode(
+                buf.getvalue()
+            ).decode("utf-8")
+            transcription = self._transcribe(data_url)
+            scores.append(
+                genrm_ocr_score(transcription, str(meta.get("ground_truth", "")))
+            )
+        return {"genrm_ocr": torch.tensor(scores, dtype=torch.float32)}
+
+
+_PLUGIN_REGISTRY: dict[str, Callable[..., BaseImageReward]] = {
     "dummy": lambda: DummyImageReward(),
     "jpeg_compressibility": lambda: JpegCompressibilityReward(),
     "pickscore": lambda: PickScoreReward(),
     "ocr": lambda: OcrEditDistanceReward(),
+    "genrm_ocr": lambda **options: GenRmOcrReward(**options),
 }
 
 
-def register_image_reward(name: str, factory: Callable[[], BaseImageReward]) -> None:
+def register_image_reward(name: str, factory: Callable[..., BaseImageReward]) -> None:
     """Register a new reward plugin factory."""
     if name in _PLUGIN_REGISTRY:
         raise ValueError(f"Image reward plugin {name!r} is already registered")
@@ -351,6 +473,10 @@ class ImageRewardEnvironment:
                     f"registered={list(_PLUGIN_REGISTRY)}"
                 )
             factory = _PLUGIN_REGISTRY[spec.name]
+            # Spec keys beyond name/weight (extra="allow") are plugin options,
+            # bound as factory kwargs (e.g. genrm_ocr model/sampling params).
+            if spec.model_extra:
+                factory = functools.partial(factory, **spec.model_extra)
             group = [
                 _RewardWorker.options(
                     num_cpus=cfg.num_cpus_per_worker, num_gpus=cfg.num_gpus_per_worker
