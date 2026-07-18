@@ -187,8 +187,10 @@ def _build_train_data(
 def _latest_checkpoint(checkpoint_dir: str) -> tuple[str, int] | None:
     """Newest complete ``step_N`` subdirectory of `checkpoint_dir`, or None.
 
-    A checkpoint counts as complete once ``optimizer.pt`` exists — it is the
-    last file :meth:`DiffusionPolicyWorker.save_checkpoint` writes.
+    A checkpoint counts as complete once ``optim/.metadata`` exists — the
+    Automodel Checkpointer's optimizer save is the last collective in
+    :meth:`DiffusionPolicyWorker.save_checkpoint`, and torch DCP writes the
+    ``.metadata`` file at the end of that save.
     """
     if not os.path.isdir(checkpoint_dir):
         return None
@@ -198,7 +200,7 @@ def _latest_checkpoint(checkpoint_dir: str) -> tuple[str, int] | None:
         if m is None:
             continue
         path = os.path.join(checkpoint_dir, name)
-        if not os.path.exists(os.path.join(path, "optimizer.pt")):
+        if not os.path.exists(os.path.join(path, "optim", ".metadata")):
             continue
         step = int(m.group(1))
         if best is None or step > best[1]:

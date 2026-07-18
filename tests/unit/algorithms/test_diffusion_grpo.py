@@ -19,10 +19,12 @@ from nemo_rl.algorithms.diffusion_grpo import _latest_checkpoint
 
 
 def _make_ckpt(root, name: str, complete: bool = True) -> str:
+    """Mimic the Automodel Checkpointer layout: model/ + optim/.metadata last."""
     path = os.path.join(root, name)
-    os.makedirs(path)
+    os.makedirs(os.path.join(path, "model"))
     if complete:
-        with open(os.path.join(path, "optimizer.pt"), "wb"):
+        os.makedirs(os.path.join(path, "optim"))
+        with open(os.path.join(path, "optim", ".metadata"), "wb"):
             pass
     return path
 
@@ -34,7 +36,7 @@ def test_latest_checkpoint_missing_dir_returns_none(tmp_path):
 def test_latest_checkpoint_picks_highest_complete_step(tmp_path):
     _make_ckpt(tmp_path, "step_1")
     expected = _make_ckpt(tmp_path, "step_10")
-    # Incomplete checkpoint (no optimizer.pt yet) must be skipped even
+    # Incomplete checkpoint (no optim/.metadata yet) must be skipped even
     # though its step number is the highest.
     _make_ckpt(tmp_path, "step_30", complete=False)
     _make_ckpt(tmp_path, "not_a_checkpoint")

@@ -19,6 +19,8 @@ monkeypatched (pipeline loading) or exercised on tiny pure-torch modules
 how the diffusers-dependent tests handle minimal installs.
 """
 
+import os
+
 import pytest
 import torch
 
@@ -263,6 +265,98 @@ def test_build_no_adapter_forward_zeroes_scales_and_matches_call_convention():
     assert all(
         m.scale != 0.0 for m in model.modules() if isinstance(m, LinearLoRA)
     )
+
+
+# ---------------------------------------------------------------------------
+# Checkpointing: Automodel Checkpointer round-trip on a tiny LoRA model
+# ---------------------------------------------------------------------------
+def _cleanup_dcp_planner_cache() -> None:
+    """Clear DCP SavePlanner class-level plan caches (shared across tests)."""
+    from torch.distributed.checkpoint.planner import SavePlanner
+
+    for attr in (
+        "_cached_save_plan",
+        "_cached_all_plans",
+        "_cached_global_plan",
+        "_cached_metadata",
+        "_cached_final_save_plan",
+    ):
+        cache = getattr(SavePlanner, attr, None)
+        if cache is not None:
+            cache.clear()
+
+
+@pytest.fixture
+def single_process_group():
+    """Single-process gloo group: the worker always has one initialized."""
+    if not torch.distributed.is_initialized():
+        os.environ.setdefault("MASTER_ADDR", "127.0.0.1")
+        os.environ.setdefault("MASTER_PORT", "29500")
+        torch.distributed.init_process_group(backend="gloo", rank=0, world_size=1)
+    _cleanup_dcp_planner_cache()
+    yield
+    _cleanup_dcp_planner_cache()
+
+
+def _lora_model_and_optimizer(seed: int):
+    from nemo_automodel.components._peft.lora import apply_lora_to_linear_modules
+
+    from nemo_rl.models.diffusion.workers.diffusion_worker import build_peft_config
+
+    torch.manual_seed(seed)
+    model = _TinyTransformer()
+    peft_cfg = build_peft_config(_lora_cfg_dict())
+    apply_lora_to_linear_modules(model, peft_cfg)
+    optimizer = torch.optim.AdamW(
+        (p for p in model.parameters() if p.requires_grad), lr=1e-2
+    )
+    return model, optimizer, peft_cfg
+
+
+def test_checkpointer_lora_round_trip_and_layout(tmp_path, single_process_group):
+    from nemo_rl.models.diffusion.workers.diffusion_worker import build_checkpointer
+
+    model, optimizer, peft_cfg = _lora_model_and_optimizer(seed=0)
+    # One real step so LoRA weights and Adam moments are all nonzero.
+    x = torch.randn(4, 4)
+    loss = sum(
+        b.attn.to_q(x).square().mean() + b.attn.to_k(x).square().mean()
+        for b in model.transformer_blocks
+    )
+    loss.backward()
+    for p in model.parameters():
+        if p.requires_grad and p.grad is not None:
+            p.grad += torch.randn_like(p.grad)
+    optimizer.step()
+
+    path = str(tmp_path / "step_1")
+    ckpt = build_checkpointer(is_peft=True, dp_rank=0)
+    ckpt.save_model(model, path, peft_config=peft_cfg)
+    ckpt.save_optimizer(optimizer, model, path)
+
+    # Layout contract shared with the resume probe in algorithms/diffusion_grpo.
+    assert os.path.isfile(os.path.join(path, "model", "adapter_model.safetensors"))
+    assert os.path.isfile(os.path.join(path, "model", "adapter_config.json"))
+    assert os.path.isfile(os.path.join(path, "optim", ".metadata"))
+
+    # Fresh model with different base weights: only the adapter is restored.
+    model2, optimizer2, _ = _lora_model_and_optimizer(seed=1)
+    ckpt2 = build_checkpointer(is_peft=True, dp_rank=0)
+    ckpt2.load_model(model2, os.path.join(path, "model"))
+    ckpt2.load_optimizer(optimizer2, model2, path)
+
+    lora1 = {k: v for k, v in model.state_dict().items() if "lora_" in k}
+    lora2 = {k: v for k, v in model2.state_dict().items() if "lora_" in k}
+    assert lora1 and lora1.keys() == lora2.keys()
+    for k in lora1:
+        assert torch.equal(lora1[k], lora2[k]), k
+
+    state1 = optimizer.state_dict()["state"]
+    state2 = optimizer2.state_dict()["state"]
+    assert len(state1) == len(state2) > 0
+    for pid in state1:
+        assert torch.allclose(state1[pid]["exp_avg"], state2[pid]["exp_avg"])
+        assert torch.allclose(state1[pid]["exp_avg_sq"], state2[pid]["exp_avg_sq"])
 
 
 def test_lora_schema_defaults_are_full_path_patterns():

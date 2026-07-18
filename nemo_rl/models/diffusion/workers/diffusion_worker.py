@@ -21,10 +21,10 @@ but does not inherit from it — the parent's API targets a HF causal-LM
 ``sample_trajectory``, ``compute_transition_logprob``, ``train_step``,
 ``save_checkpoint``, ``shutdown``.
 
-All ``torch``/``diffusers``/``peft`` imports are deferred into method bodies
-because Ray pickles the actor class at submission time, and ``torch`` at
-import time drags ``torch._dynamo.config`` (a ``ConfigModuleInstance``) which
-is not picklable.
+All ``torch``/``diffusers``/``nemo_automodel`` imports are deferred into
+method bodies because Ray pickles the actor class at submission time, and
+``torch`` at import time drags ``torch._dynamo.config`` (a
+``ConfigModuleInstance``) which is not picklable.
 
 LoRA reference: when enabled, the reference-policy mean is computed by
 zeroing the LinearLoRA scales on the *same* transformer instance
@@ -70,6 +70,30 @@ def load_diffusion_pipeline(model_name: str, *, dtype: Any, device: Any, peft_cf
         model_type="qwen_image",
     )
     return pipe, managers
+
+
+def build_checkpointer(*, is_peft: bool, dp_rank: int) -> Any:
+    """Automodel `Checkpointer` for the diffusion worker (single-GPU or DP).
+
+    `model_repo_id=None` skips the consolidated-HF-index lookup, which is LLM
+    snapshot metadata the diffusers transformer does not have; save/load paths
+    are passed per call, so `checkpoint_dir` is unused.
+    """
+    from nemo_automodel.components.checkpoint.checkpointing import (
+        Checkpointer,
+        CheckpointingConfig,
+    )
+
+    config = CheckpointingConfig(
+        enabled=True,
+        checkpoint_dir="",
+        model_save_format="safetensors",
+        model_cache_dir="",
+        model_repo_id=None,
+        save_consolidated=False,
+        is_peft=is_peft,
+    )
+    return Checkpointer(config, dp_rank=dp_rank, tp_rank=0, pp_rank=0)
 
 
 def build_peft_config(lora_cfg: dict[str, Any]) -> Any:
@@ -216,6 +240,7 @@ class DiffusionPolicyWorker:  # pragma: no cover
     _vae_scale_factor: int
     _num_channels_latents: int
     _lora_enabled: bool
+    _checkpointer: Any
     optimizer: Any
     _img_shapes: list[tuple[int, int, int]]
     adapter: Any
@@ -287,6 +312,7 @@ class DiffusionPolicyWorker:  # pragma: no cover
         self._load_pipeline()
         self._build_optimizer()
         self._loss_fn = None
+        self._checkpointer = None
         self._build_adapter()
 
     # ------------------------------------------------------------------
@@ -681,45 +707,41 @@ class DiffusionPolicyWorker:  # pragma: no cover
                 )
             )
 
-    def save_checkpoint(self, path: str) -> None:
-        import torch
+    def _get_checkpointer(self) -> Any:
+        if self._checkpointer is None:
+            self._checkpointer = build_checkpointer(
+                is_peft=self._lora_enabled, dp_rank=self.rank
+            )
+        return self._checkpointer
 
-        # DP ranks hold identical weights after the all-reduced step; only
-        # rank 0 writes to avoid concurrent writes to the same path.
-        if self.rank != 0:
-            return
-        os.makedirs(path, exist_ok=True)
-        if self._lora_enabled:
-            self.transformer.save_pretrained(path)
-        else:
-            torch.save(self.transformer.state_dict(), f"{path}/transformer.pt")
-        torch.save(self.optimizer.state_dict(), f"{path}/optimizer.pt")
+    def save_checkpoint(self, path: str) -> None:
+        """Write model + optimizer state under `path` via the Automodel Checkpointer.
+
+        Layout: ``path/model/`` (LoRA: rank-0-written adapter_model.safetensors
+        + HF-peft-compatible adapter_config.json; full-param: sharded
+        safetensors) and ``path/optim/`` (torch DCP; its ``.metadata`` is
+        written last and doubles as the resume completeness marker). Every DP
+        rank must call in: DCP saves are collectives and the Checkpointer
+        synchronizes ranks internally.
+        """
+        ckpt = self._get_checkpointer()
+        ckpt.save_model(
+            self.transformer,
+            path,
+            peft_config=getattr(self._pipe, "_peft_config", None),
+        )
+        ckpt.save_optimizer(self.optimizer, self.transformer, path)
 
     def load_checkpoint(self, path: str) -> bool:
         """Restore weights + optimizer saved by :meth:`save_checkpoint`.
 
-        Every DP rank loads the same rank-0-written checkpoint, which matches
-        the invariant that ranks hold identical weights and optimizer state.
+        LoRA restores only the adapter weights (the frozen base keeps coming
+        from the HF snapshot). All DP ranks participate, matching the
+        invariant that ranks hold identical weights and optimizer state.
         """
-        import torch
-
-        if self._lora_enabled:
-            from peft.utils import set_peft_model_state_dict
-            from safetensors.torch import load_file
-
-            adapter_sd = load_file(
-                os.path.join(path, "adapter_model.safetensors"),
-                device=str(self.device),
-            )
-            set_peft_model_state_dict(self.transformer, adapter_sd)
-        else:
-            sd = torch.load(
-                os.path.join(path, "transformer.pt"), map_location=self.device
-            )
-            self.transformer.load_state_dict(sd)
-        self.optimizer.load_state_dict(
-            torch.load(os.path.join(path, "optimizer.pt"), map_location=self.device)
-        )
+        ckpt = self._get_checkpointer()
+        ckpt.load_model(self.transformer, os.path.join(path, "model"))
+        ckpt.load_optimizer(self.optimizer, self.transformer, path)
         return True
 
     def prepare_for_generation(self) -> None:
