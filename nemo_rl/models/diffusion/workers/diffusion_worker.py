@@ -140,6 +140,10 @@ def build_peft_config(lora_cfg: dict[str, Any]) -> Any:
         dim=int(lora_cfg["rank"]),
         alpha=int(lora_cfg["alpha"]),
         dropout=float(lora_cfg["dropout"]),
+        # verl-omni/PEFT parity: gaussian std=1/rank on lora_A (Automodel
+        # default is xavier). Cross-rank consistency is held by the shared
+        # set_seed() before pipeline build.
+        lora_A_init="gaussian",
     )
 
 
@@ -704,9 +708,15 @@ class DiffusionPolicyWorker:  # pragma: no cover
             # optimizer step applies the identical global update.
             for p in self.transformer.parameters():
                 if p.requires_grad and p.grad is not None:
+                    # Reduce in fp32 to match verl-omni's FSDP1
+                    # reduce_dtype=fp32: a bf16 all-reduce over the DP ranks
+                    # loses ~0.3-0.4%/step on the small LoRA grads that the
+                    # 1e-4 ratio clip already shrinks.
+                    g32 = p.grad.float()
                     torch.distributed.all_reduce(
-                        p.grad, op=torch.distributed.ReduceOp.AVG
+                        g32, op=torch.distributed.ReduceOp.AVG
                     )
+                    p.grad = g32.to(p.grad.dtype)
         grad_norm = torch.nn.utils.clip_grad_norm_(
             (p for p in self.transformer.parameters() if p.requires_grad),
             max_norm=float(self.config["optimizer"]["max_grad_norm"]),
